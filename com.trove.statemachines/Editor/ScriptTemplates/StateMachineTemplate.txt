@@ -13,7 +13,7 @@ using UnityEngine;
 /// This is the polymorphic state buffer element.
 /// </summary>
 [InternalBufferCapacity(8)] // TODO: tweak internal capacity
-public struct #SCRIPTNAME#State : IBufferElementData, IPoolObject, IState<#SCRIPTNAME#GlobalStateUpdateData, #SCRIPTNAME#EntityStateUpdateData>
+public struct #SCRIPTNAME#State : IBufferElementData, IPoolElement, IState<#SCRIPTNAME#GlobalStateUpdateData, #SCRIPTNAME#EntityStateUpdateData>
 {
     // Required for VersionedPool handling. Determines if the state exists in the states pool.
     public int Version { get; set; }
