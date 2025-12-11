@@ -1,11 +1,11 @@
 {
   "dependencies": {
     "com.trove.common": "file:../../../com.trove.common",
-    "com.trove.debugdraw": "file:C:/Projects/Trove/com.trove.debugdraw",
+    "com.trove.debugdraw": "file:../../../com.trove.debugdraw",
     "com.trove.eventsystems": "file:../../../com.trove.eventsystems",
     "com.trove.polymorphicstructs": "file:../../../com.trove.polymorphicstructs",
-    "com.trove.spatialqueries": "file:C:/Projects/Trove/com.trove.spatialqueries",
-    "com.trove.statemachines": "file:C:/Projects/Trove/com.trove.statemachines",
+    "com.trove.spatialqueries": "file:../../../com.trove.spatialqueries",
+    "com.trove.statemachines": "file:../../../com.trove.statemachines",
     "com.trove.stats": "file:../../../com.trove.stats",
     "com.trove.tweens": "file:../../../com.trove.tweens",
     "com.trove.utilityai": "file:../../../com.trove.utilityai",
