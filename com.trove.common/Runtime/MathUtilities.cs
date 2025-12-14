@@ -1,10 +1,18 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
+using Unity.Entities;
 using Unity.Mathematics;
 
 namespace Trove
 {
+    public struct FreeIndexRange
+    {
+        public int Start;
+        public int Length;
+    }
+
     public static class MathUtilities
     {
         public static float4 ToFloat4(this float3 f)
@@ -340,6 +348,155 @@ namespace Trove
         public static bool RangesOverlap(int startA, int lengthA, int startB, int lengthB)
         {
             return startA < (startB + lengthB) && startB < (startA + lengthA);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static bool RangeContains(int start, int length, int containedStart, int containedLength)
+        {
+            return containedStart >= start && 
+                   (containedStart + containedLength <= start + length);
+        }
+
+        // TODO: untested
+        public static void AddFreeRange(int start, int length, ref DynamicBuffer<FreeIndexRange> freeIndexRanges)
+        {
+            if (start < 0 || length <= 0)
+            {
+                return;
+            }
+            
+            for (int i = 0; i < freeIndexRanges.Length; i++)
+            {
+                FreeIndexRange freeIndexRange = freeIndexRanges[i];
+
+                if (MathUtilities.RangesOverlap(freeIndexRange.Start, freeIndexRange.Length, start, length))
+                {
+                    throw new Exception($"Error: FreeRanges overlap detected. This should never happen. Make sure FreeRanges data is never tampered with.");
+                }
+                
+                // If the iterated free range ends where the new one starts, merge them (extend length)
+                if (freeIndexRange.Start + freeIndexRange.Length == start)
+                {
+                    freeIndexRange.Length += length;
+
+                    // Check if we need to merge with next free range
+                    if (i + 1 < freeIndexRanges.Length)
+                    {
+                        FreeIndexRange nextFreeIndexRange = freeIndexRanges[i+1];
+                        
+                        if (MathUtilities.RangesOverlap(freeIndexRange.Start, freeIndexRange.Length, nextFreeIndexRange.Start, nextFreeIndexRange.Length))
+                        {
+                            throw new Exception($"Error: FreeRanges overlap detected. This should never happen. Make sure FreeRanges data is never tampered with.");
+                        }
+                        
+                        // If the next free range starts where this one ends, merge them (extend length and remove next)
+                        if (nextFreeIndexRange.Start == freeIndexRange.Start + freeIndexRange.Length)
+                        {
+                            freeIndexRanges.Length += nextFreeIndexRange.Length;
+                            freeIndexRanges.RemoveAt(i+1);
+                        }
+                    }
+                    
+                    freeIndexRanges[i] = freeIndexRange;
+                    
+                    return;
+                }
+                // If freeRange starts after the new one ends, insert new one at this index
+                else if (freeIndexRange.Start > start + length)
+                {
+                    freeIndexRanges.Insert(i, new FreeIndexRange
+                    {
+                        Start = start,
+                        Length = length,
+                    });
+                    return;
+                }
+                // If the iterated freeRange starts where the new one ends, merge them 
+                else if (freeIndexRange.Start == start + length)
+                {
+                    freeIndexRange.Start = start;
+                    freeIndexRange.Length += length;
+                    freeIndexRanges[i] = freeIndexRange;
+                    return;
+                }
+            }
+            
+            // If we haven't returned yet, it means we didn't find a place to insert the new range. Add at the end.
+            freeIndexRanges.Add(new FreeIndexRange
+            {
+                Start = start,
+                Length = length,
+            });
+        }
+
+        // TODO: untested
+        public static void RemoveFreeRange(int start, int length, ref DynamicBuffer<FreeIndexRange> freeIndexRanges)
+        {
+            if (start < 0 || length <= 0)
+            {
+                return;
+            }
+            
+            for (int i = 0; i < freeIndexRanges.Length; i++)
+            {
+                FreeIndexRange freeIndexRange = freeIndexRanges[i];
+
+                // If the ranges overlap...
+                if (MathUtilities.RangesOverlap(freeIndexRange.Start, freeIndexRange.Length, start, length))
+                {
+                    // If the range fully contains the one to remove, remove range
+                    if (MathUtilities.RangeContains(freeIndexRange.Start, freeIndexRange.Length, start, length))
+                    {
+                        // If the ranges have the same start...
+                        if (freeIndexRange.Start == start)
+                        {
+                            // if we remove the entire range...
+                            if (freeIndexRange.Length == length)
+                            {
+                                freeIndexRanges.RemoveAt(i);   
+                                return;
+                            }
+                            // Remove a starting portion of the range
+                            else
+                            {
+                                freeIndexRange.Start += length;
+                                freeIndexRange.Length -= length;
+                                freeIndexRanges[i] = freeIndexRange;
+                                return;
+                            }
+                        }
+                        // If the ranges have the same end (but not the same start), remove ending portion of the range
+                        else if (freeIndexRange.Start + freeIndexRange.Length == start + length)
+                        {
+                            freeIndexRange.Length -= length;
+                            freeIndexRanges[i] = freeIndexRange;
+                            return;
+                        }
+                        // If the removed range is in the middle of the iterated range, split into two
+                        else
+                        {
+                            FreeIndexRange beginningFreeIndexRange = new FreeIndexRange
+                            {
+                                Start = freeIndexRange.Start,
+                                Length = start - freeIndexRange.Start,
+                            };
+                            FreeIndexRange endingFreeIndexRange = new FreeIndexRange
+                            {
+                                Start = start + length,
+                                Length = freeIndexRange.Start + freeIndexRange.Length,
+                            };
+                            freeIndexRanges[i] = endingFreeIndexRange;
+                            freeIndexRanges.Insert(i, beginningFreeIndexRange);
+                            return;
+                        }
+                    }
+                    // If ranges overlap but the removed one is not fully contained in the iterated one, throw.
+                    else
+                    {
+                        throw new Exception($"Error: Tried to remove a free range that was not fully allocated. This should never happen.");
+                    }
+                }
+            }
         }
     }
 }

@@ -29,16 +29,13 @@ namespace Trove
      *
      */
     
-    public interface ISubListElement
-    {
-        public SubList.InternalElementData SubListData { get; set; }
-    }
+    #region SubList
     
     /// <summary>
     /// 
     /// Allows storing multiple growable lists in the same buffer.
     /// - Sub-list elements are contiguous in memory.
-    /// - Sub-list element indexes can change when list grows
+    /// - Sub-list element indexes in the source buffer can change when list grows
     /// - Good sub-list element add and remove performance.
     /// - The encompassing buffer will grow whenever a new sub-list is created in the buffer, or when an existing
     ///   sub-list needs to reallocate because it grew past capacity.
@@ -59,43 +56,66 @@ namespace Trove
     /// - Add/Remove/Get/Set elements to it using SubList static APIs.
     /// - You can create any amount of SubLists in the same buffer. They will all live alongside eachother in that buffer.
     /// 
-    /// 
     /// </summary>
-    public struct SubList
+    
+    public interface ISubListElement
+    {
+        public byte IsAllocated { get; set; }
+    }
+
+    public unsafe struct SubListPtr : IComparable<SubListPtr>
+    {
+        public SubList* Ptr;
+
+        public SubListPtr(SubList* ptr)
+        {
+            Ptr = ptr;
+        }
+
+        public SubListPtr(DynamicBuffer<SubList> subLists, int index)
+        {
+            Ptr = (SubList*)subLists.GetUnsafePtr() + (long)index;
+        }
+
+        public SubListPtr(UnsafeList<SubList> subLists, int index)
+        {
+            Ptr = subLists.Ptr + (long)index;
+        }
+
+        public SubListPtr(NativeList<SubList> subLists, int index)
+        {
+            Ptr = subLists.GetUnsafePtr() + (long)index;
+        }
+
+        public int CompareTo(SubListPtr other)
+        {
+            return Ptr->ElementsStartIndex.CompareTo(other.Ptr->ElementsStartIndex);
+        }
+    }
+    
+    public unsafe struct SubList : IComparable<SubList>
     {
         public int Length;
         public int Capacity;
-        public float GrowFactor;
         public int ElementsStartIndex;
-        public byte IsCreated;
 
-        public struct InternalElementData
+        public int CompareTo(SubList other)
         {
-            public byte IsAllocated;
-        }
-        
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void CheckCreated(in SubList subList)
-        {
-            if (subList.IsCreated == 0)
-            {
-                throw new Exception($"Error: SubList is not created.");
-            }
+            return ElementsStartIndex.CompareTo(other.ElementsStartIndex);
         }
 
-        /// <summary>
-        /// Note: sublists will still grow even with a "growFactor" lower than 1f. But they'll only grow enough to
-        /// accomodate what is added. This can be an interesting characteristic if buffer compactness is important.
-        /// </summary>
-        public static SubList Create<T>(ref DynamicBuffer<T> buffer, int initialCapacity, float growFactor = 1.5f)
+        public bool IsCreated()
+        {
+            return ElementsStartIndex >= 0 && Capacity > 0;
+        }
+
+        public static SubList Create<T>(ref DynamicBuffer<T> buffer, int initialCapacity)
             where T : unmanaged, ISubListElement
         {
             SubList subList = new SubList();
             subList.Length = 0;
             subList.Capacity = 0;
-            subList.GrowFactor = growFactor;
             subList.ElementsStartIndex = -1;
-            subList.IsCreated = 1;
 
             SetCapacity(ref subList, ref buffer, math.max(1, initialCapacity));
 
@@ -105,85 +125,102 @@ namespace Trove
         public static unsafe void Dispose<T>(ref SubList subList, ref DynamicBuffer<T> buffer)
             where T : unmanaged, ISubListElement
         {
-            CheckCreated(in subList);
-            
-            void* src = UnsafeUtility.AddressOf(
-                ref UnsafeUtility.ArrayElementAsRef<T>((byte*)buffer.GetUnsafePtr(),
-                    subList.ElementsStartIndex));
-            UnsafeUtility.MemClear(src, sizeof(T) * subList.Length);
+            if (subList.IsCreated())
+            {
+                void* src = UnsafeUtility.AddressOf(
+                    ref UnsafeUtility.ArrayElementAsRef<T>((byte*)buffer.GetUnsafePtr(),
+                        subList.ElementsStartIndex));
+                UnsafeUtility.MemClear(src, sizeof(T) * subList.Capacity);
 
-            subList.IsCreated = 0;
-            subList.Length = 0;
-            subList.Capacity = 0;
-            subList.ElementsStartIndex = -1;
+                subList.Length = 0;
+                subList.Capacity = 0;
+                subList.ElementsStartIndex = -1;
+            }
         }
 
-        public static void Add<T>(ref SubList subList, ref DynamicBuffer<T> buffer, T element)
+        /// <summary>
+        /// Note: sublists will still grow even with a "growFactor" lower than 1f. But they'll only grow enough to
+        /// accomodate what is added. This can be an interesting characteristic if buffer compactness is important.
+        /// </summary>
+        public static void Add<T>(ref SubList subList, ref DynamicBuffer<T> buffer, T element, float growFactor = 2f)
             where T : unmanaged, ISubListElement
         {
-            CheckCreated(in subList);
-            
-            int newLength = subList.Length + 1;
-            
-            // Grow capacity
-            if (newLength > subList.Capacity)
+            if (subList.IsCreated())
             {
-                int newCapacity = math.max(
-                    (int)math.ceil(subList.Capacity * subList.GrowFactor), 
-                    subList.Capacity + 1);
-                SetCapacity(ref subList, ref buffer, newCapacity);
-            }
+                int newLength = subList.Length + 1;
 
-            element.SubListData = new InternalElementData { IsAllocated = 1 };
-            
-            buffer[subList.ElementsStartIndex + subList.Length] = element;
-            subList.Length = newLength;
+                // Grow capacity
+                if (newLength > subList.Capacity)
+                {
+                    int newCapacity = math.max(
+                        (int)math.ceil(subList.Capacity * growFactor),
+                        subList.Capacity + 1);
+                    SetCapacity(ref subList, ref buffer, newCapacity);
+                }
+
+                element.IsAllocated = 1;
+
+                buffer[subList.ElementsStartIndex + subList.Length] = element;
+                subList.Length = newLength;
+            }
+            else
+            {
+                throw new Exception("Error: tried adding to a non-created SubList.");
+            }
         }
 
         public static unsafe bool TryRemoveAt<T>(ref SubList subList, ref DynamicBuffer<T> buffer, int indexInSubList)
             where T : unmanaged, ISubListElement
         {
-            CheckCreated(in subList);
-
-            if (indexInSubList >= 0 && indexInSubList < subList.Length)
+            if (subList.IsCreated())
             {
-                int elementIndexInBuffer = subList.ElementsStartIndex + indexInSubList;
-                int nextElementsLength = subList.Length - indexInSubList - 1;
-                void* src = UnsafeUtility.AddressOf(
-                    ref UnsafeUtility.ArrayElementAsRef<T>((byte*)buffer.GetUnsafePtr(), elementIndexInBuffer + 1));
-                void* dst = UnsafeUtility.AddressOf(
-                    ref UnsafeUtility.ArrayElementAsRef<T>((byte*)buffer.GetUnsafePtr(), elementIndexInBuffer));
-                UnsafeUtility.MemMove(dst, src, sizeof(T) * nextElementsLength);
-                subList.Length--;
-                Assert.IsTrue(subList.Length >= 0);
-                return true;
+                if (indexInSubList >= 0 && indexInSubList < subList.Length)
+                {
+                    int elementIndexInBuffer = subList.ElementsStartIndex + indexInSubList;
+                    int nextElementsLength = subList.Length - indexInSubList - 1;
+                    void* src = UnsafeUtility.AddressOf(
+                        ref UnsafeUtility.ArrayElementAsRef<T>((byte*)buffer.GetUnsafePtr(), elementIndexInBuffer + 1));
+                    void* dst = UnsafeUtility.AddressOf(
+                        ref UnsafeUtility.ArrayElementAsRef<T>((byte*)buffer.GetUnsafePtr(), elementIndexInBuffer));
+                    UnsafeUtility.MemMove(dst, src, sizeof(T) * nextElementsLength);
+                    subList.Length--;
+                    Assert.IsTrue(subList.Length >= 0);
+                    return true;
+                }
             }
-            
+            else
+            {
+                throw new Exception("Error: tried removing from a non-created SubList.");
+            }
+
             return false;
         }
 
         public static bool TryRemoveAtSwapBack<T>(ref SubList subList, ref DynamicBuffer<T> buffer, int indexInSubList)
             where T : unmanaged, ISubListElement
         {
-            CheckCreated(in subList);
-
-            if (indexInSubList >= 0 && indexInSubList < subList.Length)
+            if (subList.IsCreated())
             {
-                int elementIndexInBuffer = subList.ElementsStartIndex + indexInSubList;
-                int lastElementIndexInBuffer = subList.ElementsStartIndex + subList.Length - 1;
-                buffer[elementIndexInBuffer] = buffer[lastElementIndexInBuffer];
-                subList.Length--;
-                Assert.IsTrue(subList.Length >= 0);
-                return true;
+                if (indexInSubList >= 0 && indexInSubList < subList.Length)
+                {
+                    int elementIndexInBuffer = subList.ElementsStartIndex + indexInSubList;
+                    int lastElementIndexInBuffer = subList.ElementsStartIndex + subList.Length - 1;
+                    buffer[elementIndexInBuffer] = buffer[lastElementIndexInBuffer];
+                    subList.Length--;
+                    Assert.IsTrue(subList.Length >= 0);
+                    return true;
+                }
             }
-            
+            else
+            {
+                throw new Exception("Error: tried removing from a non-created SubList.");
+            }
+
             return false;
         }
 
-        public static void Clear<T>(ref SubList subList, ref DynamicBuffer<T> buffer)
-            where T : unmanaged, ISubListElement
+        public static void Clear(ref SubList subList)
         {
-            CheckCreated(in subList);
             subList.Length = 0;
         }
 
@@ -191,16 +228,21 @@ namespace Trove
         public static bool TryGet<T>(ref SubList subList, ref DynamicBuffer<T> buffer, int indexInSubList, out T element)
             where T : unmanaged, ISubListElement
         {
-            CheckCreated(in subList);
-            
-            if (indexInSubList >= 0 && indexInSubList < subList.Length)
+            if (subList.IsCreated())
             {
-                int indexInBuffer = subList.ElementsStartIndex + indexInSubList;
-                if (indexInBuffer < buffer.Length)
+                if (indexInSubList >= 0 && indexInSubList < subList.Length)
                 {
-                    element = buffer[indexInBuffer];
-                    return true;
+                    int indexInBuffer = subList.ElementsStartIndex + indexInSubList;
+                    if (indexInBuffer < buffer.Length)
+                    {
+                        element = buffer[indexInBuffer];
+                        return true;
+                    }
                 }
+            }
+            else
+            {
+                throw new Exception("Error: tried getting from a non-created SubList.");
             }
 
             element = default;
@@ -211,17 +253,22 @@ namespace Trove
         public static bool TrySet<T>(ref SubList subList, ref DynamicBuffer<T> buffer, int indexInSubList, T element)
             where T : unmanaged, ISubListElement
         {
-            CheckCreated(in subList);
-            
-            if (indexInSubList >= 0 && indexInSubList < subList.Length)
+            if (subList.IsCreated())
             {
-                int indexInBuffer = subList.ElementsStartIndex + indexInSubList;
-                if (indexInBuffer < buffer.Length)
+                if (indexInSubList >= 0 && indexInSubList < subList.Length)
                 {
-                    element.SubListData = new InternalElementData { IsAllocated = 1 };
-                    buffer[indexInBuffer] = element;
-                    return true;
+                    int indexInBuffer = subList.ElementsStartIndex + indexInSubList;
+                    if (indexInBuffer < buffer.Length)
+                    {
+                        element.IsAllocated = 1;
+                        buffer[indexInBuffer] = element;
+                        return true;
+                    }
                 }
+            }
+            else
+            {
+                throw new Exception("Error: tried setting in a non-created SubList.");
             }
 
             element = default;
@@ -231,28 +278,29 @@ namespace Trove
         public static unsafe bool SetCapacity<T>(ref SubList subList, ref DynamicBuffer<T> buffer, int newCapacity)
             where T : unmanaged, ISubListElement
         {
-            CheckCreated(in subList);
-            
             int prevCapacity = subList.Capacity;
-            
-            // Grow
+
+            // Grow (or first-time allocate)
             if (newCapacity > prevCapacity)
             {
                 // Mark the current occupied as unoccupied before searching
-                for (int i = subList.ElementsStartIndex; i < subList.ElementsStartIndex + subList.Length; i++)
+                if (subList.IsCreated())
                 {
-                    T iteratedElement = buffer[i];
-                    iteratedElement.SubListData = new InternalElementData { IsAllocated = 0 };
-                    buffer[i] = iteratedElement;
+                    for (int i = subList.ElementsStartIndex; i < subList.ElementsStartIndex + subList.Length; i++)
+                    {
+                        T iteratedElement = buffer[i];
+                        iteratedElement.IsAllocated = 0;
+                        buffer[i] = iteratedElement;
+                    }
                 }
-                
+
                 // Search for available free range
                 int freeRangeStart = -1;
                 int freeRangeLength = 0;
                 for (int i = 0; i < buffer.Length; i++)
                 {
                     T iteratedElement = buffer[i];
-                    if (iteratedElement.SubListData.IsAllocated == 0)
+                    if (iteratedElement.IsAllocated == 0)
                     {
                         // Detect start of free range
                         if (freeRangeStart < 0)
@@ -285,12 +333,12 @@ namespace Trove
                     {
                         freeRangeStart = buffer.Length;
                     }
-                    
+
                     buffer.Resize(buffer.Length + requiredLengthDiff, NativeArrayOptions.ClearMemory);
                 }
-                
+
                 // Copy sub-list over to new range,
-                if (subList.ElementsStartIndex >= 0 && subList.Length > 0)
+                if (subList.IsCreated() && subList.Length > 0)
                 {
                     void* src = UnsafeUtility.AddressOf(
                         ref UnsafeUtility.ArrayElementAsRef<T>((byte*)buffer.GetUnsafePtr(),
@@ -298,7 +346,7 @@ namespace Trove
                     void* dst = UnsafeUtility.AddressOf(
                         ref UnsafeUtility.ArrayElementAsRef<T>((byte*)buffer.GetUnsafePtr(), freeRangeStart));
                     UnsafeUtility.MemMove(dst, src, sizeof(T) * subList.Length);
-                
+
                     // Free previous range
                     UnsafeUtility.MemClear(src, sizeof(T) * subList.Length);
                 }
@@ -307,28 +355,30 @@ namespace Trove
                 for (int i = freeRangeStart; i < freeRangeStart + newCapacity; i++)
                 {
                     T iteratedElement = buffer[i];
-                    iteratedElement.SubListData = new InternalElementData { IsAllocated = 1 };
+                    iteratedElement.IsAllocated = 1;
                     buffer[i] = iteratedElement;
                 }
-                
+
                 // Update sublist
                 subList.Capacity = newCapacity;
                 subList.ElementsStartIndex = freeRangeStart;
-                
+
                 return true;
             }
             // Shrink
-            else if (newCapacity < prevCapacity)
+            else if (subList.IsCreated() && newCapacity < prevCapacity)
             {
                 // Can't shrink more than current length
                 if (newCapacity >= subList.Length)
                 {
                     // Mark the freed range as occupied
-                    for (int i = subList.ElementsStartIndex + newCapacity; i < subList.ElementsStartIndex + subList.Capacity; i++)
+                    for (int i = subList.ElementsStartIndex + newCapacity;
+                         i < subList.ElementsStartIndex + subList.Capacity;
+                         i++)
                     {
-                        buffer[i] = new T { SubListData = new InternalElementData { IsAllocated = 0 }};
+                        buffer[i] = new T { IsAllocated = 0 };
                     }
-                    
+
                     subList.Capacity = newCapacity;
                     return true;
                 }
@@ -340,29 +390,132 @@ namespace Trove
         public static unsafe void Resize<T>(ref SubList subList, ref DynamicBuffer<T> buffer, int newLength)
             where T : unmanaged, ISubListElement
         {
-            CheckCreated(in subList);
-            
-            // Only allow growing
-            if (newLength > subList.Length)
+            if (subList.IsCreated())
             {
-                // Check grow capacity
-                if (newLength > subList.Capacity)
+                // Only allow growing
+                if (newLength > subList.Length)
                 {
-                    SetCapacity(ref subList, ref buffer, newLength);
+                    // Check grow capacity
+                    if (newLength > subList.Capacity)
+                    {
+                        SetCapacity(ref subList, ref buffer, newLength);
+                    }
+
+                    // Clear elements up to new length
+                    for (int i = subList.ElementsStartIndex + subList.Length;
+                         i < subList.ElementsStartIndex + newLength;
+                         i++)
+                    {
+                        T elem = buffer[i];
+                        elem = new T { IsAllocated = 1 };
+                        buffer[i] = elem;
+                    }
+
+                    subList.Length = newLength;
                 }
-                
-                // Clear elements up to new length
-                for (int i = subList.ElementsStartIndex + subList.Length; i < subList.ElementsStartIndex + newLength; i++)
-                {
-                    T elem = buffer[i];
-                    elem = new T { SubListData = new InternalElementData { IsAllocated = 1 }};
-                    buffer[i] = elem;
-                }
-                
-                subList.Length = newLength;
+            }
+            else
+            {
+                throw new Exception("Error: tried resizing a non-created SubList.");
             }
         }
+        
+        /// <summary>
+        /// TODO: Untested
+        /// 
+        /// Makes all sublist datas contiguous in memory, with no gap in-between lists, and sets all sublist capacities
+        /// to their length. Also trims buffer length and capacity.
+        ///
+        /// This can be useful for improving performance of iterating all elements of all sublists, reducing memory
+        /// usage, or improving efficiency of serialization or netcode synchronization. 
+        ///
+        /// Note: This is an expensive operation, but can be worth it if the list element counts rarely change.
+        /// Note: This modifies the provided sublists data via ptr.
+        /// Note: The data of all sublists that were omitted from the sublists list in parameters will disappear.
+        /// </summary>
+        public static void MakeCompact<T>(ref UnsafeList<SubListPtr> allSubListPtrs, ref DynamicBuffer<T> buffer)
+            where T : unmanaged, ISubListElement
+        {
+            // Sort sublists by startIndex
+            allSubListPtrs.Sort();
+            
+            // Relocate all sublist contents so that they are all next to each other
+            int currentAddIndex = 0;
+            for (int i = 0; i < allSubListPtrs.Length; i++)
+            {
+                ref SubList subListRef = ref UnsafeUtility.AsRef<SubList>(allSubListPtrs[i].Ptr);
+                
+                // Copy list content to new destination, if it's not already there
+                if (subListRef.ElementsStartIndex != currentAddIndex)
+                {
+                    void* src = UnsafeUtility.AddressOf(
+                        ref UnsafeUtility.ArrayElementAsRef<T>((byte*)buffer.GetUnsafePtr(),
+                            subListRef.ElementsStartIndex));
+                    void* dst = UnsafeUtility.AddressOf(
+                        ref UnsafeUtility.ArrayElementAsRef<T>((byte*)buffer.GetUnsafePtr(), 
+                            currentAddIndex));
+                    UnsafeUtility.MemCpy(dst, src, sizeof(T) * subListRef.Length);
+                }
+                
+                SetCapacity(ref subListRef, ref buffer, subListRef.Length);
+                currentAddIndex = subListRef.ElementsStartIndex + subListRef.Length;
+            }
+            
+            // Trim buffer length and capacity
+            buffer.ResizeUninitialized(currentAddIndex);
+            buffer.Capacity = currentAddIndex;
+        }
     }
+    
+    #endregion
+    //
+    // #region SubLinkedList
+    //
+    // /// <summary>
+    // /// 
+    // /// Allows storing multiple growable lists in the same buffer, as linked lists.
+    // /// - Sub-list elements are NOT contiguous in memory.
+    // /// - Sub-list elements are NOT guaranteed to keep the same index in the source buffer.
+    // /// - Data of the entire buffer always stays compact.
+    // /// - The encompassing buffer will grow to accomodate the contents of all sublists when elements are added.
+    // ///
+    // /// This type of sub-list is best suited when the compactness of the data is key. There will be no "holes" in the
+    // /// buffer between sublists or between elements. This makes the memory footprint small, and provides great performance
+    // /// when we need to iterate all elements of all sublists. The downsides are poorer iteration performance of a single
+    // /// sub-list, and the inability to keep a direct stable index to a sublist element.
+    // ///
+    // /// How it works:
+    // /// - Each sub-list remembers its first element.
+    // /// - When length would exceed capacity, the sub-list capacity is resized and the sub-list elements are moved to
+    // ///   another indexes range that can accomodate the new capacity.
+    // /// - When resizing capacity like this, we first iterate the buffer in order to find an existing free range that
+    // ///   could accomodate the capacity. If an existing range is not found, we increase the buffer length to accomodate it.
+    // ///
+    // /// Usage:
+    // /// - Create a SubLinkedList with SubLinkedList.Create();
+    // /// - Store the created SubLinkedList anywhere (in a component, in a buffer element, in a native collection, etc...).
+    // /// - Add/Remove/Get/Set elements to it using SubLinkedList static APIs.
+    // /// - You can create any amount of SubLinkedLists in the same buffer. They will all live alongside eachother in that buffer.
+    // /// 
+    // /// </summary>
+    //
+    // public interface ISubLinkedListElement
+    // {
+    //     public int PrevElementIndex { get; set; }
+    //     public int NextElementIndex { get; set; }
+    // }
+    //
+    // public struct SubLinkedList
+    // {
+    //     public int FirstElementIndex;
+    //
+    //     public static SubLinkedList Create<T>(ref DynamicBuffer<T> buffer) where T : unmanaged, ISubListElement
+    //     {
+    //         
+    //     }
+    // }
+    //
+    // #endregion
 
     // #region PooledSubList
     //
@@ -768,339 +921,5 @@ namespace Trove
     //
     // #endregion
     //
-    // #region CompactSubList
-    //
-    // public static class CompactSubList
-    // {
-    //     public struct InternalElementData
-    //     {
-    //         public int PinnedFirstElementVersion;
-    //         public int DatasStartIndex;
-    //         public int Length;
-    //     }
-    //
-    //     public struct CompactSubListHandle
-    //     {
-    //         public int PinnedFirstElementIndex;
-    //         public int PinnedFirstElementVersion;
-    //     }
-    //
-    //     public struct Iterator<T>
-    //         where T : unmanaged, ICompactSubListElement
-    //     {
-    //     }
-    //
-    //     public static void Create<T>(ref DynamicBuffer<T> buffer, out CompactSubListHandle handle)
-    //         where T : unmanaged, ICompactSubListElement
-    //     {
-    //         // Create the first pinned element holding list data in the buffer
-    //         
-    //         bool firstElementReplacesExisting = false;
-    //         int firstElementInsertionIndex = -1;
-    //         int firstElementVersion = 1;
-    //         int firstElementDatasStartIndex = buffer.Length;
-    //         int lastPinnedFirstElementIndex = -1;
-    //
-    //         // If there are any pinned first elements added, look for a free one
-    //         for (int i = 0; i < buffer.Length; i++)
-    //         {
-    //             T iteratedElement = buffer[i];
-    //
-    //             // Stop looking as soon as we are not iterating pinned first elements anymore.
-    //             if (!IsPinnedFirstElement(iteratedElement))
-    //             {
-    //                 firstElementInsertionIndex = i;
-    //                 break;
-    //             }
-    //
-    //             lastPinnedFirstElementIndex = i;
-    //
-    //             // If this is a free pinned first element, take its place
-    //             if (IsFreePinnedFirstElement(iteratedElement))
-    //             {
-    //                 firstElementReplacesExisting = true;
-    //                 firstElementInsertionIndex = i;
-    //                 firstElementVersion =
-    //                     -iteratedElement.CompactSubListData.PinnedFirstElementVersion + 1; // Flip and increment
-    //                 firstElementDatasStartIndex = iteratedElement.CompactSubListData.DatasStartIndex;
-    //                 break;
-    //             }
-    //         }
-    //
-    //         // If we haven't found a free first element index, allocate new one at the end of the current first elements
-    //         if (firstElementInsertionIndex < 0)
-    //         {
-    //             firstElementInsertionIndex = lastPinnedFirstElementIndex + 1;
-    //         }
-    //
-    //         // Set element sublist data
-    //         T pinnedFirstElement = new T
-    //         {
-    //             CompactSubListData = new InternalElementData
-    //             {
-    //                 PinnedFirstElementVersion = firstElementVersion,
-    //                 DatasStartIndex = firstElementDatasStartIndex,
-    //                 Length = 0,
-    //             },
-    //         };
-    //
-    //         // Replace existing first element
-    //         if (firstElementReplacesExisting)
-    //         {
-    //             buffer[firstElementInsertionIndex] = pinnedFirstElement;
-    //         }
-    //         // Add new first pinned element for sublist and patch indexes
-    //         else
-    //         {
-    //             // If the current buffer only had first elements, we add at the end
-    //             if (firstElementInsertionIndex >= buffer.Length)
-    //             {
-    //                 buffer.Add(pinnedFirstElement);
-    //             }
-    //             // else, insert at the end of first elements
-    //             else
-    //             {
-    //                 buffer.Insert(firstElementInsertionIndex, pinnedFirstElement);
-    //             }
-    //
-    //             // Patch the "data start index" of all first elements, following the add/insert
-    //             PatchFirstElementsForNewSubList(ref buffer);
-    //         }
-    //
-    //         // Handle
-    //         handle = new CompactSubListHandle
-    //         {
-    //             PinnedFirstElementIndex = firstElementInsertionIndex,
-    //             PinnedFirstElementVersion = firstElementVersion,
-    //         };
-    //     }
-    //
-    //     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    //     private static bool IsPinnedFirstElement<T>(T element)
-    //         where T : unmanaged, ICompactSubListElement
-    //     {
-    //         return element.CompactSubListData.PinnedFirstElementVersion != 0;
-    //     }
-    //
-    //     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    //     private static bool IsValidPinnedFirstElement<T>(T element)
-    //         where T : unmanaged, ICompactSubListElement
-    //     {
-    //         return element.CompactSubListData.PinnedFirstElementVersion > 0;
-    //     }
-    //
-    //     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    //     private static bool IsFreePinnedFirstElement<T>(T element)
-    //         where T : unmanaged, ICompactSubListElement
-    //     {
-    //         return element.CompactSubListData.PinnedFirstElementVersion < 0;
-    //     }
-    //
-    //     public static bool TryGetIterator<T>(CompactSubListHandle subListHandle, ref DynamicBuffer<T> buffer, out Iterator<T> iterator)
-    //         where T : unmanaged, ICompactSubListElement
-    //     {
-    //         int iteratedIndex = -1;
-    //         if (subListHandle.PinnedFirstElementIndex >= 0 && subListHandle.PinnedFirstElementIndex < buffer.Length)
-    //         {
-    //             T pinnedFirstElement = buffer[subListHandle.PinnedFirstElementIndex];
-    //             if (pinnedFirstElement.CompactSubListData.PinnedFirstElementVersion ==
-    //                 subListHandle.PinnedFirstElementVersion)
-    //             {
-    //                 iteratedIndex = pinnedFirstElement.CompactSubListData.DatasStartIndex;
-    //
-    //                 iterator = new Iterator<T>
-    //                 {
-    //                     PrevPrevIteratedIndex = -1,
-    //                     PrevIteratedIndex = -1,
-    //                     IteratedIndex = iteratedIndex,
-    //                 };
-    //
-    //                 return true;
-    //             }
-    //         }
-    //
-    //         return false;
-    //     }
-    //
-    //     public static bool TryAdd<T>(
-    //         CompactSubListHandle subListHandle,
-    //         ref DynamicBuffer<T> buffer,
-    //         T element,
-    //         out int indexInSubList)
-    //         where T : unmanaged, ICompactSubListElement
-    //     {
-    //         if (subListHandle.PinnedFirstElementIndex >= 0 && subListHandle.PinnedFirstElementIndex < buffer.Length)
-    //         {
-    //             T pinnedFirstElement = buffer[subListHandle.PinnedFirstElementIndex];
-    //             
-    //             Assert.IsTrue(IsValidPinnedFirstElement(pinnedFirstElement));
-    //             Assert.IsTrue(pinnedFirstElement.CompactSubListData.DatasStartIndex > 0);
-    //             
-    //             if (pinnedFirstElement.CompactSubListData.PinnedFirstElementVersion ==
-    //                 subListHandle.PinnedFirstElementVersion)
-    //             {
-    //                 int datasStartIndex = pinnedFirstElement.CompactSubListData.DatasStartIndex;
-    //
-    //                 // Add element at the end of sublist length
-    //                 indexInSubList = pinnedFirstElement.CompactSubListData.Length;
-    //                 int addedElementIndexInBuffer = datasStartIndex + indexInSubList;
-    //                 element.CompactSubListData = new InternalElementData(); // non-firstPinnedElements have no metadata
-    //                 if (addedElementIndexInBuffer >= buffer.Length)
-    //                 {
-    //                     buffer.Add(element);
-    //                 }
-    //                 else
-    //                 {
-    //                     buffer.Insert(addedElementIndexInBuffer, element);
-    //                     PatchFirstElementsForElementAddRemove(ref buffer, subList.PinnedFirstElementIndex, 1);
-    //                 }
-    //
-    //                 // Output element handle
-    //                 elementHandle = new ElementHandle
-    //                 {
-    //                     PinnedFirstElementIndex = subList.PinnedFirstElementIndex,
-    //                     PinnedFirstElementVersion = pinnedFirstElement.CompactSubListData.PinnedFirstElementVersion,
-    //                     ElementIndexInSubList = indexInSubList,
-    //                 };
-    //
-    //                 // Update sub-list
-    //                 subList.Length++;
-    //             }
-    //         }
-    //
-    //         indexInSubList = -1;
-    //         return false;
-    //     }
-    //
-    //     public static void Clear<T>(ref CompactSubList subList, ref DynamicBuffer<T> buffer)
-    //         where T : unmanaged, ICompactSubListElement
-    //     {
-    //         subList.CheckCreated();
-    //         
-    //         if (subList.Length > 0 && subList.PinnedFirstElementIndex >= 0)
-    //         {
-    //             T pinnedFirstElement = buffer[subList.PinnedFirstElementIndex];
-    //             buffer.RemoveRange(pinnedFirstElement.CompactSubListData.DatasStartIndex, subList.Length);
-    //             PatchFirstElementsForElementAddRemove(ref buffer, subList.PinnedFirstElementIndex, -subList.Length);
-    //             subList.Length = 0;
-    //         }
-    //     }
-    //
-    //     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    //     public static bool TryGet<T>(ref CompactSubList subList, ref DynamicBuffer<T> buffer,
-    //         int indexInSubList, out T element)
-    //         where T : unmanaged, ICompactSubListElement
-    //     {
-    //         subList.CheckCreated();
-    //
-    //         if (indexInSubList >= 0 && indexInSubList < subList.Length && subList.PinnedFirstElementIndex >= 0)
-    //         {
-    //             T pinnedFirstElement = buffer[subList.PinnedFirstElementIndex];
-    //             int indexInBuffer = pinnedFirstElement.CompactSubListData.DatasStartIndex + indexInSubList;
-    //             
-    //             Assert.IsTrue(indexInBuffer < buffer.Length);
-    //             
-    //             element = buffer[indexInBuffer];
-    //             return true;
-    //         }
-    //
-    //         element = default;
-    //         return false;
-    //     }
-    //
-    //     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    //     public static bool TrySet<T>(ref CompactSubList subList, ref DynamicBuffer<T> buffer,
-    //         int indexInSubList, T element)
-    //         where T : unmanaged, ICompactSubListElement
-    //     {
-    //         subList.CheckCreated();
-    //
-    //         int indexCounter = 0;
-    //         Iterator<T> iterator = GetIterator<T>(subList);
-    //         while (iterator.GetNext(in buffer, out T iteratedElement, out int iteratedElementIndex))
-    //         {
-    //             if (indexCounter == indexInSubList)
-    //             {
-    //                 T existingElement = buffer[iteratedElementIndex];
-    //                 element.CompactSubListData = existingElement.CompactSubListData;
-    //                 buffer[iteratedElementIndex] = element;
-    //                 return true;
-    //             }
-    //
-    //             indexCounter++;
-    //         }
-    //
-    //         return false;
-    //     }
-    //
-    //     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    //     public static bool TryRemove<T>(ref CompactSubList subList, ref DynamicBuffer<T> buffer,
-    //         int indexInSubList)
-    //         where T : unmanaged, ICompactSubListElement
-    //     {
-    //         subList.CheckCreated();
-    //
-    //         int indexCounter = 0;
-    //         Iterator<T> iterator = GetIterator<T>(subList);
-    //         while (iterator.GetNext(in buffer, out T iteratedElement, out int iteratedElementIndex))
-    //         {
-    //             if (indexCounter == indexInSubList)
-    //             {
-    //                 iterator.RemoveIteratedElement(ref subList, ref buffer);
-    //                 return true;
-    //             }
-    //
-    //             indexCounter++;
-    //         }
-    //
-    //         return false;
-    //     }
-    //
-    //     private static void PatchFirstElementsForElementAddRemove<T>(ref DynamicBuffer<T> buffer, int firstElementIndexOfChangedSubList, int changeAmount)
-    //         where T : unmanaged, ICompactSubListElement
-    //     {
-    //         // Last indexes of only first elements
-    //         for (int i = 0; i < buffer.Length; i++)
-    //         {
-    //             T iteratedElement = buffer[i];
-    //             if (IsValidPinnedFirstElement(iteratedElement))
-    //             {
-    //                 // Increment start indexes of sublists that come after the one that got a added element, or
-    //                 // Decrement start indexes of sublists that come after the one that got a removed element
-    //                 if (i >= firstElementIndexOfChangedSubList)
-    //                 {
-    //                     InternalElementData iteratedElementData = iteratedElement.CompactSubListData;
-    //                     iteratedElementData.DatasStartIndex += changeAmount;
-    //                     iteratedElement.CompactSubListData = iteratedElementData;
-    //                 }
-    //             }
-    //             else
-    //             {
-    //                 break;
-    //             }
-    //         }
-    //     }
-    //
-    //     private static void PatchFirstElementsForNewSubList<T>(ref DynamicBuffer<T> buffer)
-    //         where T : unmanaged, ICompactSubListElement
-    //     {
-    //         // Last indexes of only first elements
-    //         for (int i = 0; i < buffer.Length; i++)
-    //         {
-    //             T iteratedElement = buffer[i];
-    //             if (IsPinnedFirstElement(iteratedElement))
-    //             {
-    //                 InternalElementData iteratedElementData = iteratedElement.CompactSubListData;
-    //                 iteratedElementData.DatasStartIndex += 1;
-    //                 iteratedElement.CompactSubListData = iteratedElementData;
-    //             }
-    //             else
-    //             {
-    //                 break;
-    //             }
-    //         }
-    //     }
-    // }
-    //
-    // #endregion
+    
 }
