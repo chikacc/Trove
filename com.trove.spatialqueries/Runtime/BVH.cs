@@ -5,7 +5,7 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Entities;
 using Unity.Mathematics;
 
-namespace Trove.Spatial.Tests
+namespace Trove.SpatialQueries
 {
     public struct BVHNode : IComparable<BVHNode>
     {
