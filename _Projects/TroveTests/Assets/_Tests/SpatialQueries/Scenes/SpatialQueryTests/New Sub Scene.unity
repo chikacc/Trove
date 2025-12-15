@@ -151,15 +151,15 @@ MonoBehaviour:
   BVHCubePrefab: {fileID: 8139080054391949969, guid: 5377fdba6c360a044b6a811782b56b71,
     type: 3}
   SpawnCount: 100000
-  SpawnArea:
-    Center:
-      x: 0
-      y: 0
-      z: 0
-    Extents:
-      x: 200
-      y: 200
-      z: 200
+  SpawnScale: 4
+  SpawnAreaCenter:
+    x: 0
+    y: 0
+    z: 0
+  SpawnAreaExtents:
+    x: 500
+    y: 500
+    z: 500
 --- !u!4 &1436509444
 Transform:
   m_ObjectHideFlags: 0

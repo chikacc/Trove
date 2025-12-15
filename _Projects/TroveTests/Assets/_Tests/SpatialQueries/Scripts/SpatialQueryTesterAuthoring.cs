@@ -9,6 +9,7 @@ class SpatialQueryTesterAuthoring : MonoBehaviour
     public GameObject BVHCubePrefab;
 
     public int SpawnCount = 100;
+    public float SpawnScale = 1f;
     public float3 SpawnAreaCenter = float3.zero;
     public float3 SpawnAreaExtents = new float3(50f);
 }
@@ -23,6 +24,7 @@ class SpatialQueryTesterAuthoringBaker : Baker<SpatialQueryTesterAuthoring>
             BVHCubePrefab = GetEntity(authoring.BVHCubePrefab, TransformUsageFlags.None),
             
             SpawnCount = authoring.SpawnCount,
+            SpawnScale = authoring.SpawnScale,
             SpawnArea = AABB.FromCenterExtents(authoring.SpawnAreaCenter, authoring.SpawnAreaExtents),
         });
     }

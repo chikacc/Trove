@@ -189,12 +189,6 @@ namespace Trove
             float3 projPointOnSegment = s1 + math.projectsafe(point - s1, s2 - s1);
             return math.distancesq(point, projPointOnSegment);
         }
-        
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static int ComputeMortonCode(float3 position)
-        {
-            return 0;
-        }
 
         // TODO: Source: https://github.com/recastnavigation/recastnavigation/blob/main/Recast/Source/RecastRasterization.cpp
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
