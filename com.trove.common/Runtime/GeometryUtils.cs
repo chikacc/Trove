@@ -75,6 +75,16 @@ namespace Trove
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static AABB FromPoint(float3 center)
+        {
+            return new AABB
+            {
+                Min = center,
+                Max = center,
+            };
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static AABB FromTriangle(float3 v0, float3 v1, float3 v2)
         {
             AABB aabb = AABB.GetEmpty();
@@ -85,10 +95,17 @@ namespace Trove
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void Include(float3 point)
+        public void Include(in float3 point)
         {
             Min = math.min(Min, point);
             Max = math.max(Max, point);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void Include(in AABB aabb)
+        {
+            Min = math.min(Min, aabb.Min);
+            Max = math.max(Max, aabb.Max);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -102,6 +119,12 @@ namespace Trove
         {
             AABB triangleAABB = AABB.FromTriangle(v0, v1, v2);
             return OverlapAABB(in triangleAABB);
+        }
+        
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public float3 GetCenter()
+        {
+            return Min + ((Max - Min) * 0.5f);
         }
     }
 
@@ -165,6 +188,12 @@ namespace Trove
         {
             float3 projPointOnSegment = s1 + math.projectsafe(point - s1, s2 - s1);
             return math.distancesq(point, projPointOnSegment);
+        }
+        
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static int ComputeMortonCode(float3 position)
+        {
+            return 0;
         }
 
         // TODO: Source: https://github.com/recastnavigation/recastnavigation/blob/main/Recast/Source/RecastRasterization.cpp
