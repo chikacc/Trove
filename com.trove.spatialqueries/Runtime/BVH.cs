@@ -180,7 +180,9 @@ namespace Trove.SpatialQueries
             {
                 dep = new BVHSortNodesInitialJob
                 {
+                    WorkerCount = workerCount,
                     UnsortedNodes = UnsortedNodes,
+                    SortingNodeBuckets = SortingNodeBuckets,
                     SortingNodeIndexes = SortingNodeIndexes,
                 }.Schedule(dep);
 
@@ -190,17 +192,18 @@ namespace Trove.SpatialQueries
                     // Launch one job per digit value...
                     dep = new BVHSortNodesParallelJob
                     {
+                        WorkerCount = workerCount,
                         DigitIndex = digitIndex,
                         UnsortedNodes = UnsortedNodes,
                         SortingNodeBuckets = SortingNodeBuckets,
                         SortingNodeIndexes = SortingNodeIndexes,
-                    }.ScheduleParallel(BVHUtils.NbValuesPerMortonCodeDigit, 1, dep);
+                    }.ScheduleParallel(workerCount, 1, dep);
 
                     // Then merge
                     dep = new BVHSortNodesMergeJob()
                     {
+                        WorkerCount = workerCount,
                         DigitIndex = digitIndex,
-                        UnsortedNodes = UnsortedNodes,
                         SortingNodeBuckets = SortingNodeBuckets,
                         SortingNodeIndexes = SortingNodeIndexes,
                     }.Schedule(dep);
@@ -383,8 +386,10 @@ namespace Trove.SpatialQueries
     [BurstCompile]
     public struct BVHSortNodesInitialJob : IJob
     {
+        public int WorkerCount;
         [ReadOnly]
         public NativeList<BVHNode> UnsortedNodes;
+        public NativeList<UnsafeList<int>> SortingNodeBuckets;
         public NativeList<UnsafeList<int>> SortingNodeIndexes;
 
         public void Execute()
@@ -399,12 +404,24 @@ namespace Trove.SpatialQueries
             }
             SortingNodeIndexes[0] = srcNodes;
             SortingNodeIndexes[1] = dstNodes;
+            
+            // Ensure buckets capacities
+            int requiredBucketsCount = BVHUtils.NbValuesPerMortonCodeDigit * WorkerCount;
+            if (SortingNodeBuckets.Length < requiredBucketsCount)
+            {
+                int lengthDiff = requiredBucketsCount - SortingNodeBuckets.Length;
+                for (int i = 0; i < lengthDiff; i++)
+                {
+                    SortingNodeBuckets.Add(new UnsafeList<int>(256, Allocator.Persistent));
+                }
+            }
         }
     }
 
     [BurstCompile]
     public unsafe struct BVHSortNodesParallelJob : IJobFor
     {
+        public int WorkerCount;
         public int DigitIndex;
         [ReadOnly]
         public NativeList<BVHNode> UnsortedNodes;
@@ -413,19 +430,8 @@ namespace Trove.SpatialQueries
         [NativeDisableParallelForRestriction]
         public NativeList<UnsafeList<int>> SortingNodeIndexes;
 
-        public void Execute(int digitValueForWorker)
+        public void Execute(int workerIndex)
         {
-            /*
-             * New approach
-             * - Each parallel job has to handle a subsection of the nodes
-             *      - So each parallel job has its own copy of all buckets
-             * - Then the merge job merges multiple buckets into one list
-             *  
-             *  
-             */
-            
-            
-            
             // Powers of 10
             Span<uint> powersOfTen = stackalloc uint[]
             {
@@ -441,7 +447,10 @@ namespace Trove.SpatialQueries
                 1000000000
             };
             
-            UnsafeList<int> bucketList = SortingNodeBuckets[digitValueForWorker];
+            int nodesCountForWorker = (int)math.ceil((float)UnsortedNodes.Length / (float)WorkerCount);
+            int nodesStartIndex = workerIndex * nodesCountForWorker;
+            int nodesEndIndex = math.min(UnsortedNodes.Length, nodesStartIndex + nodesCountForWorker);
+            int bucketsStartIndex = workerIndex * BVHUtils.NbValuesPerMortonCodeDigit;
 
             // Swap dst and src nodes
             UnsafeList<int> srcNodes;
@@ -451,31 +460,27 @@ namespace Trove.SpatialQueries
             }
             else
             {
-                // Note: on final iteration (9), the results will be at "Length - 2"
                 srcNodes = SortingNodeIndexes[1];
             }
-
+            
             // Get the digit at that index for each node, and put it in the corresponding bucket
-            for (int srcNodeIndex = 0; srcNodeIndex < srcNodes.Length; srcNodeIndex++)
+            for (int srcNodeIndex = nodesStartIndex; srcNodeIndex < nodesEndIndex; srcNodeIndex++)
             {
                 uint mortonCode = UnsortedNodes[srcNodes[srcNodeIndex]].MortonCode;
                 int digitValue = (int)((mortonCode / powersOfTen[DigitIndex]) % 10);
-
-                if (digitValue == digitValueForWorker)
-                {
-                    bucketList.AddWithGrowFactor(srcNodes[srcNodeIndex], 2f);
-                }
+                
+                UnsafeList<int> bucketForValue = SortingNodeBuckets[bucketsStartIndex + digitValue];
+                bucketForValue.AddWithGrowFactor(srcNodes[srcNodeIndex], 2f);
+                SortingNodeBuckets[bucketsStartIndex + digitValue] = bucketForValue;
             }
-            
-            SortingNodeBuckets[digitValueForWorker] = bucketList;
         }
     }
 
     [BurstCompile]
     public unsafe struct BVHSortNodesMergeJob : IJob
     {
+        public int WorkerCount;
         public int DigitIndex;
-        public NativeList<BVHNode> UnsortedNodes;
         public NativeList<UnsafeList<int>> SortingNodeBuckets;
         public NativeList<UnsafeList<int>> SortingNodeIndexes;
 
@@ -493,13 +498,18 @@ namespace Trove.SpatialQueries
                 
             // Update sorted nodes from buckets
             int* dstPtr = dstNodes.Ptr;
-            for (int bucketIndex = 0; bucketIndex < BVHUtils.NbValuesPerMortonCodeDigit; bucketIndex++)
+            for (int bucketValue = 0; bucketValue < BVHUtils.NbValuesPerMortonCodeDigit; bucketValue++)
             {
-                UnsafeList<int> bucketList = SortingNodeBuckets[bucketIndex];
-                UnsafeUtility.MemCpy(dstPtr, bucketList.Ptr, UnsafeUtility.SizeOf<int>() * bucketList.Length);
-                dstPtr = dstPtr + (long)bucketList.Length;
-                bucketList.Clear();
-                SortingNodeBuckets[bucketIndex] = bucketList;
+                for (int workerIndex = 0; workerIndex < WorkerCount; workerIndex++)
+                {
+                    int workerBucketIndex = (workerIndex * BVHUtils.NbValuesPerMortonCodeDigit) + bucketValue;
+                    
+                    UnsafeList<int> bucketList = SortingNodeBuckets[workerBucketIndex];
+                    UnsafeUtility.MemCpy(dstPtr, bucketList.Ptr, UnsafeUtility.SizeOf<int>() * bucketList.Length);
+                    dstPtr = dstPtr + (long)bucketList.Length;
+                    bucketList.Clear();
+                    SortingNodeBuckets[workerBucketIndex] = bucketList;
+                }
             }
         }
     }
