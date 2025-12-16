@@ -37,30 +37,53 @@ namespace Trove.SpatialQueries
         public int Count;
     }
 
+    internal struct SortingNode
+    {
+        public int Next;
+        public int NodeIndex;
+    }
+
     public struct BVH<TNodeData> where TNodeData : unmanaged
     {
-        internal NativeList<BVHNode> Nodes;
+        internal NativeList<BVHNode> UnsortedNodes;
+        internal NativeList<BVHNode> SortedNodes;
         internal NativeList<TNodeData> LeafNodeDatas;
         internal NativeList<StartIndexAndCount> NodeLevelStartIndexesAndCounts;
         internal NativeReference<AABB> SceneAABB;
+        internal NativeList<UnsafeList<int>> SortingNodeBuckets;
 
         public static BVH<TNodeData> Create(Allocator allocator, int initialElementsCapacity)
         {
             BVH<TNodeData> bvh = new BVH<TNodeData>();
-            bvh.Nodes = new NativeList<BVHNode>(
+            bvh.UnsortedNodes = new NativeList<BVHNode>(
                 BVHUtils.ComputeTotalNodesCountForEntries(initialElementsCapacity), 
                 allocator);
+            bvh.SortedNodes = new NativeList<BVHNode>(bvh.UnsortedNodes.Capacity, allocator);
             bvh.LeafNodeDatas = new NativeList<TNodeData>(initialElementsCapacity, allocator);
             bvh.NodeLevelStartIndexesAndCounts = new NativeList<StartIndexAndCount>(32, allocator);
-            bvh.SceneAABB = new NativeReference<AABB>(Allocator.Persistent);
+            bvh.SceneAABB = new NativeReference<AABB>(allocator);
+            bvh.SortingNodeBuckets = new NativeList<UnsafeList<int>>(BVHUtils.NbValuesPerMortonCodeDigit, allocator);
+            bvh.SortingNodeBuckets.Resize(BVHUtils.NbValuesPerMortonCodeDigit + 2, NativeArrayOptions.ClearMemory);
+            for (int i = 0; i < BVHUtils.NbValuesPerMortonCodeDigit; i++)
+            {
+                bvh.SortingNodeBuckets[i] = new UnsafeList<int>(256, allocator);
+            }
+            // The last 2 lists are for sorting
+            bvh.SortingNodeBuckets[bvh.SortingNodeBuckets.Length - 2] = new UnsafeList<int>(bvh.UnsortedNodes.Capacity, allocator);
+            bvh.SortingNodeBuckets[bvh.SortingNodeBuckets.Length - 1] = new UnsafeList<int>(bvh.UnsortedNodes.Capacity, allocator);
             return bvh;
         }
 
         public void Dispose(JobHandle jobHandle)
         {
-            if (Nodes.IsCreated)
+            if (UnsortedNodes.IsCreated)
             {
-                Nodes.Dispose(jobHandle);
+                UnsortedNodes.Dispose(jobHandle);
+            }
+            
+            if (SortedNodes.IsCreated)
+            {
+                SortedNodes.Dispose(jobHandle);
             }
 
             if (LeafNodeDatas.IsCreated)
@@ -77,14 +100,34 @@ namespace Trove.SpatialQueries
             {
                 SceneAABB.Dispose(jobHandle);
             }
+
+            if (SortingNodeBuckets.IsCreated)
+            {
+                for (int i = 0; i < SortingNodeBuckets.Length; i++)
+                {
+                    if (SortingNodeBuckets[i].IsCreated)
+                    {
+                        SortingNodeBuckets[i].Dispose(jobHandle);
+                    }
+                }
+                
+                SortingNodeBuckets.Dispose(jobHandle);
+            }
         }
         
         public void Clear()
         {
-            Nodes.Clear();
+            UnsortedNodes.Clear();
+            SortedNodes.Clear();
             LeafNodeDatas.Clear();
             NodeLevelStartIndexesAndCounts.Clear();
             SceneAABB.Value = AABB.GetEmpty();
+            for (int i = 0; i < SortingNodeBuckets.Length; i++)
+            {
+                UnsafeList<int> bucketList = SortingNodeBuckets[i];
+                bucketList.Clear();
+                SortingNodeBuckets[i] = bucketList;
+            }
         }
 
         public void Add(in TNodeData nodeData, in AABB aabb)
@@ -93,7 +136,7 @@ namespace Trove.SpatialQueries
             sceneAABB.Include(aabb);
             SceneAABB.Value = sceneAABB;
             
-            Nodes.Add(new BVHNode
+            UnsortedNodes.Add(new BVHNode
             {
                 AABB = aabb,
                 DataIndex = LeafNodeDatas.Length,
@@ -109,18 +152,19 @@ namespace Trove.SpatialQueries
             {
                 WorkerCount = workerCount,
                 SceneAABB = SceneAABB,
-                Nodes = Nodes,
+                Nodes = UnsortedNodes,
             }.ScheduleParallel(workerCount, 1, dep);
             
             dep = new BVHSortNodesJob
             {
-                Nodes = Nodes,
+                UnsortedNodes = UnsortedNodes,
+                SortedNodes = SortedNodes,
+                SortingNodeBuckets = SortingNodeBuckets,
             }.Schedule(dep);
             
             dep = new BVHBuildHierarchyJob
             {
-                SceneAABB = SceneAABB,
-                Nodes = Nodes,
+                SortedNodes = SortedNodes,
                 NodeLevelStartIndexesAndCounts = NodeLevelStartIndexesAndCounts,
             }.Schedule(dep);
 
@@ -130,19 +174,19 @@ namespace Trove.SpatialQueries
         public unsafe void GetNodes(out UnsafeList<BVHNode> nodes,
             out UnsafeList<StartIndexAndCount> nodeLevelStartIndexesAndCounts)
         {
-            nodes = (*Nodes.GetUnsafeList());
+            nodes = (*SortedNodes.GetUnsafeList());
             nodeLevelStartIndexesAndCounts = (*NodeLevelStartIndexesAndCounts.GetUnsafeList());
         }
 
         public void QueryAABBRecursive(in AABB aabb, ref UnsafeList<TNodeData> results)
         {
             // start at root node
-            QueryAABBRecursiveInternal(Nodes.Length - 1, in aabb, ref results);
+            QueryAABBRecursiveInternal(SortedNodes.Length - 1, in aabb, ref results);
         }
 
         internal void QueryAABBRecursiveInternal(int nodeIndex, in AABB aabb, ref UnsafeList<TNodeData> results)
         {
-            BVHNode queriedNode = Nodes[nodeIndex];
+            BVHNode queriedNode = SortedNodes[nodeIndex];
             if (queriedNode.IsValid() && aabb.OverlapAABB(queriedNode.AABB))
             {
                 if (nodeIndex < LeafNodeDatas.Length)
@@ -162,12 +206,12 @@ namespace Trove.SpatialQueries
         {
             // Add root node to stack
             workStack.Clear();
-            workStack.Add(Nodes.Length - 1);
+            workStack.Add(SortedNodes.Length - 1);
 
             for (int i = 0; i < workStack.Length; i++)
             {
                 int nodeIndex = workStack[i];
-                BVHNode queriedNode = Nodes[nodeIndex];
+                BVHNode queriedNode = SortedNodes[nodeIndex];
                 if (queriedNode.IsValid() && aabb.OverlapAABB(queriedNode.AABB))
                 {
                     if (nodeIndex < LeafNodeDatas.Length)
@@ -192,6 +236,9 @@ namespace Trove.SpatialQueries
 
     internal static class BVHUtils
     {
+        internal const int NbDigitsMortonCode = 10; // The number of digits in the max value of a uint (4294967295)
+        internal const int NbValuesPerMortonCodeDigit = 10; // The number of values a digit can have (0 to 9)
+        
         internal static int ComputeTotalNodesCountForEntries(int entriesCount)
         {
             // Make entries count even
@@ -284,40 +331,120 @@ namespace Trove.SpatialQueries
     [BurstCompile]
     public unsafe struct BVHSortNodesJob : IJob
     {
-        public NativeList<BVHNode> Nodes;
+        public NativeList<BVHNode> UnsortedNodes;
+        public NativeList<BVHNode> SortedNodes;
+        public NativeList<UnsafeList<int>> SortingNodeBuckets;
         
         public void Execute()
         {
-            Nodes.Sort();
+            // Radix Sort
+            
+            // Init sorting lists
+            SortedNodes.Resize(UnsortedNodes.Length, NativeArrayOptions.UninitializedMemory);
+            UnsafeList<int> srcNodes = SortingNodeBuckets[SortingNodeBuckets.Length - 2];
+            UnsafeList<int> dstNodes = SortingNodeBuckets[SortingNodeBuckets.Length - 1];
+            srcNodes.Resize(UnsortedNodes.Length, NativeArrayOptions.UninitializedMemory);
+            dstNodes.Resize(UnsortedNodes.Length, NativeArrayOptions.UninitializedMemory);
+            for (int i = 0; i < UnsortedNodes.Length; i++)
+            {
+                srcNodes[i] = i;
+            }
+            SortingNodeBuckets[SortingNodeBuckets.Length - 2] = srcNodes;
+            SortingNodeBuckets[SortingNodeBuckets.Length - 1] = dstNodes;
+            
+            // Powers of 10
+            Span<uint> powersOfTen = stackalloc uint[]
+                {   1, 
+                    10, 
+                    100, 
+                    1000, 
+                    10000, 
+                    100000, 
+                    1000000, 
+                    10000000,
+                    100000000,
+                    1000000000 };
+            
+            //Debug.Log($"Initial: {UnsortedNodes[srcNodes[0]].MortonCode}, {UnsortedNodes[srcNodes[1]].MortonCode}, {UnsortedNodes[srcNodes[2]].MortonCode}, {UnsortedNodes[srcNodes[3]].MortonCode}, {UnsortedNodes[srcNodes[4]].MortonCode}, {UnsortedNodes[srcNodes[5]].MortonCode}, {UnsortedNodes[srcNodes[6]].MortonCode}, {UnsortedNodes[srcNodes[7]].MortonCode}, {UnsortedNodes[srcNodes[8]].MortonCode}, {UnsortedNodes[srcNodes[9]].MortonCode}");
+            
+            // For each digit index of the morton code...
+            for (int digitIndex = 0; digitIndex < BVHUtils.NbDigitsMortonCode; digitIndex++)
+            {
+                // Swap dst and src nodes
+                if (digitIndex % 2 == 0)
+                {
+                    srcNodes = SortingNodeBuckets[SortingNodeBuckets.Length - 2];
+                    dstNodes = SortingNodeBuckets[SortingNodeBuckets.Length - 1];
+                }
+                else
+                {
+                    // Note: on final iteration (9), the results will be at "Length - 2"
+                    srcNodes = SortingNodeBuckets[SortingNodeBuckets.Length - 1];
+                    dstNodes = SortingNodeBuckets[SortingNodeBuckets.Length - 2];
+                }
+                
+                // Get the digit at that index for each node, and put it in the corresponding bucket
+                for (int srcNodeIndex = 0; srcNodeIndex < srcNodes.Length; srcNodeIndex++)
+                {
+                    uint mortonCode = UnsortedNodes[srcNodes[srcNodeIndex]].MortonCode;
+                    int digitValue = (int)((mortonCode / powersOfTen[digitIndex]) % 10);
+
+                    UnsafeList<int> bucketList = SortingNodeBuckets[digitValue];
+                    bucketList.AddWithGrowFactor(srcNodes[srcNodeIndex], 2f);
+                    SortingNodeBuckets[digitValue] = bucketList;
+                }
+                
+                // Update sorted nodes from buckets
+                int* dstPtr = dstNodes.Ptr;
+                for (int bucketIndex = 0; bucketIndex < BVHUtils.NbValuesPerMortonCodeDigit; bucketIndex++)
+                {
+                    UnsafeList<int> bucketList = SortingNodeBuckets[bucketIndex];
+                    UnsafeUtility.MemCpy(dstPtr, bucketList.Ptr, UnsafeUtility.SizeOf<int>() * bucketList.Length);
+                    dstPtr = dstPtr + (long)bucketList.Length;
+                    bucketList.Clear();
+                    SortingNodeBuckets[bucketIndex] = bucketList;
+                }
+                
+                //Debug.Log($"At digit {digitIndex}: {UnsortedNodes[dstNodes[0]].MortonCode}, {UnsortedNodes[dstNodes[1]].MortonCode}, {UnsortedNodes[dstNodes[2]].MortonCode}, {UnsortedNodes[dstNodes[3]].MortonCode}, {UnsortedNodes[dstNodes[4]].MortonCode}, {UnsortedNodes[dstNodes[5]].MortonCode}, {UnsortedNodes[dstNodes[6]].MortonCode}, {UnsortedNodes[dstNodes[7]].MortonCode}, {UnsortedNodes[dstNodes[8]].MortonCode}, {UnsortedNodes[dstNodes[9]].MortonCode}");
+
+            }
+            
+            // Process final sorted results
+            for (int i = 0; i < dstNodes.Length; i++)
+            {
+                SortedNodes[i] = UnsortedNodes[dstNodes[i]];
+            }
+                
+            //Debug.Log($"Final: {SortedNodes[0].MortonCode}, {SortedNodes[1].MortonCode}, {SortedNodes[2].MortonCode}, {SortedNodes[3].MortonCode}, {SortedNodes[4].MortonCode}, {SortedNodes[5].MortonCode}, {SortedNodes[6].MortonCode}, {SortedNodes[7].MortonCode}, {SortedNodes[8].MortonCode}, {SortedNodes[9].MortonCode}");
+
         }
     }
 
     [BurstCompile]
-    public unsafe struct BVHBuildHierarchyJob : IJob
+    public struct BVHBuildHierarchyJob : IJob
     {
-        public NativeReference<AABB> SceneAABB;
-        public NativeList<BVHNode> Nodes;
+        public NativeList<BVHNode> SortedNodes;
         // TODO: mostly for debug. Keep it?
         public NativeList<StartIndexAndCount> NodeLevelStartIndexesAndCounts;
         
         public void Execute()
         {
-            if(Nodes.Length < 2)
+            if(SortedNodes.Length < 2)
                 return;
             
             // If nodes count is not even, add padding node
-            if (Nodes.Length % 2 != 0)
+            if (SortedNodes.Length % 2 != 0)
             {
-                Nodes.Add(new BVHNode
+                SortedNodes.Add(new BVHNode
                 {
                     DataIndex = -1,
-                    AABB = Nodes[Nodes.Length - 1].AABB,
+                    AABB = SortedNodes[SortedNodes.Length - 1].AABB,
                 });
             }
             
             // Build node hierarchy
             int nodesStartForLevel = 0;
-            int nodesCountForLevel = Nodes.Length;
+            int nodesCountForLevel = SortedNodes.Length;
             while (nodesCountForLevel > 1)
             {
                 NodeLevelStartIndexesAndCounts.Add(new StartIndexAndCount
@@ -326,14 +453,14 @@ namespace Trove.SpatialQueries
                     Count = nodesCountForLevel,
                 });
                 
-                int nodesLengthBeforeAdd = Nodes.Length;
+                int nodesLengthBeforeAdd = SortedNodes.Length;
                 
                 for (int i = nodesStartForLevel; i < nodesLengthBeforeAdd; i += 2)
                 {
-                    AABB aabb = Nodes[i].AABB;
-                    aabb.Include(Nodes[i + 1].AABB);
+                    AABB aabb = SortedNodes[i].AABB;
+                    aabb.Include(SortedNodes[i + 1].AABB);
 
-                    Nodes.Add(new BVHNode
+                    SortedNodes.Add(new BVHNode
                     {
                         AABB = aabb,
                         DataIndex = i,
@@ -341,15 +468,15 @@ namespace Trove.SpatialQueries
                 }
             
                 nodesStartForLevel = nodesLengthBeforeAdd;
-                nodesCountForLevel = Nodes.Length - nodesLengthBeforeAdd;
+                nodesCountForLevel = SortedNodes.Length - nodesLengthBeforeAdd;
                 
                 // If nodes count is not even amd is not root node, add padding node
                 if (nodesCountForLevel > 1 && nodesCountForLevel % 2 != 0)
                 {
-                    Nodes.Add(new BVHNode
+                    SortedNodes.Add(new BVHNode
                     {
                         DataIndex = -1,
-                        AABB = Nodes[Nodes.Length - 1].AABB,
+                        AABB = SortedNodes[SortedNodes.Length - 1].AABB,
                     });
                     nodesCountForLevel += 1;
                 }
