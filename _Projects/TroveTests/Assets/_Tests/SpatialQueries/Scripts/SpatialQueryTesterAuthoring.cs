@@ -12,6 +12,9 @@ class SpatialQueryTesterAuthoring : MonoBehaviour
     public float SpawnScale = 1f;
     public float3 SpawnAreaCenter = float3.zero;
     public float3 SpawnAreaExtents = new float3(50f);
+
+    public float QuerierRatio = 1f;
+    public float QueryScale = 4f;
 }
 
 class SpatialQueryTesterAuthoringBaker : Baker<SpatialQueryTesterAuthoring>
@@ -22,6 +25,9 @@ class SpatialQueryTesterAuthoringBaker : Baker<SpatialQueryTesterAuthoring>
         AddComponent(entity, new SpatialQueryTester
         {
             BVHCubePrefab = GetEntity(authoring.BVHCubePrefab, TransformUsageFlags.None),
+            
+            QuerierRatio = authoring.QuerierRatio,
+            QueryScale = authoring.QueryScale,
             
             SpawnCount = authoring.SpawnCount,
             SpawnScale = authoring.SpawnScale,

@@ -6,6 +6,7 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Entities;
 using Unity.Jobs;
 using Unity.Mathematics;
+using UnityEngine;
 
 namespace Trove.SpatialQueries
 {
@@ -24,15 +25,22 @@ namespace Trove.SpatialQueries
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public int CompareTo(BVHNode other)
         {
-            return (int)(MortonCode - other.MortonCode);
+            return MortonCode.CompareTo(other.MortonCode) ;
         }
+    }
+
+    public struct StartIndexAndCount
+    {
+        public int StartIndex;
+        public int Count;
     }
 
     public struct BVH<TNodeData> where TNodeData : unmanaged
     {
         internal NativeList<BVHNode> Nodes;
         internal NativeList<TNodeData> LeafNodeDatas;
-        internal AABB SceneAABB;
+        internal NativeList<StartIndexAndCount> NodeLevelStartIndexesAndCounts;
+        internal NativeReference<AABB> SceneAABB;
 
         public static BVH<TNodeData> Create(Allocator allocator, int initialElementsCapacity)
         {
@@ -41,6 +49,8 @@ namespace Trove.SpatialQueries
                 ComputeTotalNodesCountForEntries(initialElementsCapacity), 
                 allocator);
             bvh.LeafNodeDatas = new NativeList<TNodeData>(initialElementsCapacity, allocator);
+            bvh.NodeLevelStartIndexesAndCounts = new NativeList<StartIndexAndCount>(32, allocator);
+            bvh.SceneAABB = new NativeReference<AABB>(Allocator.Persistent);
             return bvh;
         }
 
@@ -54,6 +64,16 @@ namespace Trove.SpatialQueries
             if (LeafNodeDatas.IsCreated)
             {
                 LeafNodeDatas.Dispose(jobHandle);
+            }
+
+            if (NodeLevelStartIndexesAndCounts.IsCreated)
+            {
+                NodeLevelStartIndexesAndCounts.Dispose(jobHandle);
+            }
+
+            if (SceneAABB.IsCreated)
+            {
+                SceneAABB.Dispose(jobHandle);
             }
         }
 
@@ -75,12 +95,15 @@ namespace Trove.SpatialQueries
         {
             Nodes.Clear();
             LeafNodeDatas.Clear();
-            SceneAABB = AABB.GetEmpty();
+            NodeLevelStartIndexesAndCounts.Clear();
+            SceneAABB.Value = AABB.GetEmpty();
         }
 
         public void Add(in TNodeData nodeData, in AABB aabb)
         {
-            SceneAABB.Include(aabb);
+            AABB sceneAABB = SceneAABB.Value;
+            sceneAABB.Include(aabb);
+            SceneAABB.Value = sceneAABB;
             
             Nodes.Add(new BVHNode
             {
@@ -93,11 +116,13 @@ namespace Trove.SpatialQueries
         public unsafe void Build_Mortons()
         {
             // Compute morton codes (from normalized position relative to scene AABB)
-            float3 sceneDimensions = SceneAABB.Max - SceneAABB.Min;
+            AABB sceneAABB = SceneAABB.Value;
+            float3 sceneDimensions = sceneAABB.Max - sceneAABB.Min;
+            BVHNode* nodesPtr = Nodes.GetUnsafePtr();
             for (int i = 0; i < Nodes.Length; i++)
             {
-                ref BVHNode nodeRef = ref UnsafeUtility.ArrayElementAsRef<BVHNode>(Nodes.GetUnsafePtr(), i);
-                float3 normalizedPosition = (nodeRef.AABB.GetCenter() - SceneAABB.Min) / sceneDimensions; // Position from 0f to 1f in the scene
+                ref BVHNode nodeRef = ref UnsafeUtility.ArrayElementAsRef<BVHNode>(nodesPtr, i);
+                float3 normalizedPosition = (nodeRef.AABB.GetCenter() - sceneAABB.Min) / sceneDimensions; // Position from 0f to 1f in the scene
                 nodeRef.MortonCode = ComputeMortonCode(normalizedPosition);
             }
         }
@@ -121,13 +146,19 @@ namespace Trove.SpatialQueries
             }
             
             // Build node hierarchy
-            int nodesStartForStage = 0;
-            int nodesCountForStage = Nodes.Length;
-            while (nodesCountForStage > 1)
+            int nodesStartForLevel = 0;
+            int nodesCountForLevel = Nodes.Length;
+            while (nodesCountForLevel > 1)
             {
+                NodeLevelStartIndexesAndCounts.Add(new StartIndexAndCount
+                {
+                    StartIndex = nodesStartForLevel,
+                    Count = nodesCountForLevel,
+                });
+                
                 int nodesLengthBeforeAdd = Nodes.Length;
                 
-                for (int i = nodesStartForStage; i < nodesLengthBeforeAdd; i += 2)
+                for (int i = nodesStartForLevel; i < nodesLengthBeforeAdd; i += 2)
                 {
                     AABB aabb = Nodes[i].AABB;
                     aabb.Include(Nodes[i + 1].AABB);
@@ -139,20 +170,27 @@ namespace Trove.SpatialQueries
                     });
                 }
             
-                nodesStartForStage = nodesLengthBeforeAdd;
-                nodesCountForStage = Nodes.Length - nodesLengthBeforeAdd;
+                nodesStartForLevel = nodesLengthBeforeAdd;
+                nodesCountForLevel = Nodes.Length - nodesLengthBeforeAdd;
                 
                 // If nodes count is not even amd is not root node, add padding node
-                if (nodesCountForStage > 1 && nodesCountForStage % 2 != 0)
+                if (nodesCountForLevel > 1 && nodesCountForLevel % 2 != 0)
                 {
                     Nodes.Add(new BVHNode
                     {
                         DataIndex = -1,
                         AABB = Nodes[Nodes.Length - 1].AABB,
                     });
-                    nodesCountForStage += 1;
+                    nodesCountForLevel += 1;
                 }
             }
+            
+            // Add final level
+            NodeLevelStartIndexesAndCounts.Add(new StartIndexAndCount
+            {
+                StartIndex = nodesStartForLevel,
+                Count = nodesCountForLevel,
+            });
         }
 
         public unsafe void Build()
@@ -161,11 +199,13 @@ namespace Trove.SpatialQueries
                 return;
             
             // Compute morton codes (from normalized position relative to scene AABB)
-            float3 sceneDimensions = SceneAABB.Max - SceneAABB.Min;
+            AABB sceneAABB = SceneAABB.Value;
+            float3 sceneDimensions = sceneAABB.Max - sceneAABB.Min;
+            BVHNode* nodesPtr = Nodes.GetUnsafePtr();
             for (int i = 0; i < Nodes.Length; i++)
             {
-                ref BVHNode nodeRef = ref UnsafeUtility.ArrayElementAsRef<BVHNode>(Nodes.GetUnsafePtr(), i);
-                float3 normalizedPosition = (nodeRef.AABB.GetCenter() - SceneAABB.Min) / sceneDimensions; // Position from 0f to 1f in the scene
+                ref BVHNode nodeRef = ref UnsafeUtility.ArrayElementAsRef<BVHNode>(nodesPtr, i);
+                float3 normalizedPosition = (nodeRef.AABB.GetCenter() - sceneAABB.Min) / sceneDimensions; // Position from 0f to 1f in the scene
                 nodeRef.MortonCode = ComputeMortonCode(normalizedPosition);
             }
             
@@ -183,13 +223,19 @@ namespace Trove.SpatialQueries
             }
             
             // Build node hierarchy
-            int nodesStartForStage = 0;
-            int nodesCountForStage = Nodes.Length;
-            while (nodesCountForStage > 1)
+            int nodesStartForLevel = 0;
+            int nodesCountForLevel = Nodes.Length;
+            while (nodesCountForLevel > 1)
             {
+                NodeLevelStartIndexesAndCounts.Add(new StartIndexAndCount
+                {
+                    StartIndex = nodesStartForLevel,
+                    Count = nodesCountForLevel,
+                });
+                
                 int nodesLengthBeforeAdd = Nodes.Length;
                 
-                for (int i = nodesStartForStage; i < nodesLengthBeforeAdd; i += 2)
+                for (int i = nodesStartForLevel; i < nodesLengthBeforeAdd; i += 2)
                 {
                     AABB aabb = Nodes[i].AABB;
                     aabb.Include(Nodes[i + 1].AABB);
@@ -201,20 +247,34 @@ namespace Trove.SpatialQueries
                     });
                 }
             
-                nodesStartForStage = nodesLengthBeforeAdd;
-                nodesCountForStage = Nodes.Length - nodesLengthBeforeAdd;
+                nodesStartForLevel = nodesLengthBeforeAdd;
+                nodesCountForLevel = Nodes.Length - nodesLengthBeforeAdd;
                 
                 // If nodes count is not even amd is not root node, add padding node
-                if (nodesCountForStage > 1 && nodesCountForStage % 2 != 0)
+                if (nodesCountForLevel > 1 && nodesCountForLevel % 2 != 0)
                 {
                     Nodes.Add(new BVHNode
                     {
                         DataIndex = -1,
                         AABB = Nodes[Nodes.Length - 1].AABB,
                     });
-                    nodesCountForStage += 1;
+                    nodesCountForLevel += 1;
                 }
             }
+            
+            // Add final level
+            NodeLevelStartIndexesAndCounts.Add(new StartIndexAndCount
+            {
+                StartIndex = nodesStartForLevel,
+                Count = nodesCountForLevel,
+            });
+        }
+
+        public unsafe void GetNodes(out UnsafeList<BVHNode> nodes,
+            out UnsafeList<StartIndexAndCount> nodeLevelStartIndexesAndCounts)
+        {
+            nodes = (*Nodes.GetUnsafeList());
+            nodeLevelStartIndexesAndCounts = (*NodeLevelStartIndexesAndCounts.GetUnsafeList());
         }
 
         public void QueryAABBRecursive(in AABB aabb, ref UnsafeList<TNodeData> results)
@@ -309,7 +369,7 @@ namespace Trove.SpatialQueries
             uint expandedX = ExpandBits((uint)nPos.x);
             uint expandedY = ExpandBits((uint)nPos.y);
             uint expandedZ = ExpandBits((uint)nPos.z);
-            
+
             // This is what creates the "interleaving" of the expanded bits. Multiplication by 4 "shifts" the bits
             // by two spaces, and multiplying by 2 shifts by one space.
             return (expandedX * 4) + (expandedY * 2) + expandedZ;

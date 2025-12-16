@@ -124,7 +124,13 @@ namespace Trove
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public float3 GetCenter()
         {
-            return Min + ((Max - Min) * 0.5f);
+            return Min + GetExtents();
+        }
+        
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public float3 GetExtents()
+        {
+            return (Max - Min) * 0.5f;
         }
     }
 

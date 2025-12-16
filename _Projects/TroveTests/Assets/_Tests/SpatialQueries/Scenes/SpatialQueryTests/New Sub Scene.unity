@@ -160,6 +160,8 @@ MonoBehaviour:
     x: 500
     y: 500
     z: 500
+  QuerierRatio: 1
+  QueryScale: 4
 --- !u!4 &1436509444
 Transform:
   m_ObjectHideFlags: 0

@@ -1,3 +1,4 @@
+using Trove.DebugDraw;
 using Trove.SpatialQueries;
 using Unity.Burst;
 using Unity.Burst.Intrinsics;
@@ -7,6 +8,7 @@ using Unity.Entities;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Transforms;
+using UnityEngine;
 using AABB = Trove.AABB;
 
 public struct SpatialQueryTester : IComponentData
@@ -16,12 +18,17 @@ public struct SpatialQueryTester : IComponentData
     public int SpawnCount;
     public AABB SpawnArea;
     public float SpawnScale;
+    
+    public float QuerierRatio;
+    public float QueryScale;
 
     public bool IsInitialized;
 }
 
 partial struct SpatialQueryTesterSystem : ISystem
 {
+    private DebugDrawGroup _debugDrawGroup;
+    
     public struct TestNodeData
     {
         public Entity Entity;
@@ -33,6 +40,9 @@ partial struct SpatialQueryTesterSystem : ISystem
     public void OnCreate(ref SystemState state)
     {
         _bvh = BVH<TestNodeData>.Create(Allocator.Domain, 100000);
+        
+        state.RequireForUpdate<SpatialQueryTester>();
+        state.RequireForUpdate<DebugDrawSingleton>();
     }
 
     [BurstCompile]
@@ -44,68 +54,151 @@ partial struct SpatialQueryTesterSystem : ISystem
     [BurstCompile]
     public void OnUpdate(ref SystemState state)
     {
-        EntityCommandBuffer ecb = new EntityCommandBuffer(Allocator.Temp);
-
-        foreach (var (tester, entity) in SystemAPI.Query<RefRW<SpatialQueryTester>>().WithEntityAccess())
+        // Allocate the DebugDrawGroup if not created
+        if (!_debugDrawGroup.IsCreated)
         {
-            if (!tester.ValueRW.IsInitialized)
+            ref DebugDrawSingleton debugDrawSingleton = ref SystemAPI.GetSingletonRW<DebugDrawSingleton>().ValueRW;
+            _debugDrawGroup = debugDrawSingleton.AllocateDebugDrawGroup();
+        }
+        
+        if (SystemAPI.HasSingleton<SpatialQueryTester>())
+        {
+            ref SpatialQueryTester tester = ref SystemAPI.GetSingletonRW<SpatialQueryTester>().ValueRW;
+            
+            EntityCommandBuffer ecb = new EntityCommandBuffer(Allocator.Temp);
+
+            if (!tester.IsInitialized)
             {
                 Unity.Mathematics.Random random = Unity.Mathematics.Random.CreateFromIndex(0);
-                for (int i = 0; i < tester.ValueRW.SpawnCount; i++)
+                for (int i = 0; i < tester.SpawnCount; i++)
                 {
-                    Entity newInstance = ecb.Instantiate(tester.ValueRW.BVHCubePrefab);
+                    Entity newInstance = ecb.Instantiate(tester.BVHCubePrefab);
                     ecb.SetComponent(newInstance, LocalTransform.FromPositionRotationScale(
-                        random.NextFloat3(tester.ValueRW.SpawnArea.Min, tester.ValueRW.SpawnArea.Max),
+                        random.NextFloat3(tester.SpawnArea.Min, tester.SpawnArea.Max),
                         random.NextQuaternionRotation(),
-                        tester.ValueRO.SpawnScale));
+                        tester.SpawnScale));
                 }
+
+                tester.IsInitialized = true;
+            }
+
+            ecb.Playback(state.EntityManager);
+            ecb.Dispose();
+
+            state.Dependency = new ClearBVHJob
+            {
+                BVH = _bvh,
+            }.Schedule(state.Dependency);
+
+            state.Dependency = new AddToBVHJob
+            {
+                BVH = _bvh,
+            }.Schedule(state.Dependency);
+
+            state.Dependency = new BuildBVHMortonJob()
+            {
+                BVH = _bvh,
+            }.Schedule(state.Dependency);
+
+            state.Dependency = new BuildBVHSortJob
+            {
+                BVH = _bvh,
+            }.Schedule(state.Dependency);
+
+            state.Dependency = new BuildBVHHierarchyJob
+            {
+                BVH = _bvh,
+            }.Schedule(state.Dependency);
+
+            // state.Dependency = new BuildBVHJob
+            // {
+            //     BVH = _bvh,
+            // }.Schedule(state.Dependency);
+
+            // state.Dependency = new QueryBVHRecursiveJob()
+            // {
+            //     QueryScale = tester.QueryScale,
+            //     BVH = _bvh,
+            // }.ScheduleParallel(state.Dependency);
+
+            state.Dependency = new QueryBVHStackJob()
+            {
+                QueryScale = tester.QueryScale,
+                BVH = _bvh,
+            }.ScheduleParallel(state.Dependency);
+
+            // Debug
+            if (SystemAPI.HasSingleton<BVHDebugger>())
+            {
+                BVHDebugger debugger = SystemAPI.GetSingleton<BVHDebugger>();
                 
-                tester.ValueRW.IsInitialized = true;
+                _debugDrawGroup.Clear();
+                state.Dependency.Complete();
+
+                // if (debugger.LogMortonCodes)
+                // {
+                //     _bvh.GetNodes(out UnsafeList<BVHNode> nodes, 
+                //         out UnsafeList<StartIndexAndCount> levelStartIndexesAndCounts);
+                //     
+                //     string log = "MortonCodes:";
+                //     log += "\n------------------------------------";
+                //     if (levelStartIndexesAndCounts.Length > 0)
+                //     {
+                //         StartIndexAndCount leafNodesData = levelStartIndexesAndCounts[0];
+                //
+                //         for (int i = leafNodesData.StartIndex; 
+                //              i < leafNodesData.StartIndex + leafNodesData.Count; 
+                //              i++)
+                //         {
+                //             BVHNode node = nodes[i];
+                //             log += $"\n{i}: {node.MortonCode}";
+                //         }
+                //         
+                //         Debug.Log(log);
+                //     }
+                // }
+            
+                if (debugger.DebugMortonCurve)
+                {
+                    _bvh.GetNodes(out UnsafeList<BVHNode> nodes, 
+                        out UnsafeList<StartIndexAndCount> levelStartIndexesAndCounts);
+
+                    if (levelStartIndexesAndCounts.Length > 0)
+                    {
+                        StartIndexAndCount leafNodesData = levelStartIndexesAndCounts[0];
+
+                        for (int i = leafNodesData.StartIndex; 
+                             i < math.min(debugger.MortonCurveDebugIterations, leafNodesData.StartIndex + leafNodesData.Count - 1); 
+                             i++)
+                        {
+                            BVHNode node = nodes[i];
+                            BVHNode nextNode = nodes[i + 1];
+                            _debugDrawGroup.DrawLine(node.AABB.GetCenter(), nextNode.AABB.GetCenter(), UnityEngine.Color.yellow);
+                        }
+                    }
+                }
+
+                if (debugger.DebugBoundingBoxes)
+                {
+                    _bvh.GetNodes(out UnsafeList<BVHNode> nodes, 
+                        out UnsafeList<StartIndexAndCount> levelStartIndexesAndCounts);
+
+                    if (debugger.BoundingBoxDebugLevel >= 0 && levelStartIndexesAndCounts.Length > debugger.BoundingBoxDebugLevel)
+                    {
+                        StartIndexAndCount levelNodesData = levelStartIndexesAndCounts[debugger.BoundingBoxDebugLevel];
+                        for (int i = levelNodesData.StartIndex; i < levelNodesData.StartIndex + levelNodesData.Count - 1; i++)
+                        {
+                            BVHNode node = nodes[i];
+                            _debugDrawGroup.DrawWireBox(
+                                node.AABB.GetCenter(), 
+                                quaternion.identity,
+                                node.AABB.GetExtents(), 
+                                UnityEngine.Color.green);
+                        }
+                    }
+                }
             }
         }
-                
-        ecb.Playback(state.EntityManager);
-        ecb.Dispose();
-
-        state.Dependency = new ClearBVHJob
-        {
-            BVH = _bvh,
-        }.Schedule(state.Dependency);
-        
-        state.Dependency = new AddToBVHJob
-        {
-            BVH = _bvh,
-        }.Schedule(state.Dependency);
-        
-        state.Dependency = new BuildBVHMortonJob()
-        {
-            BVH = _bvh,
-        }.Schedule(state.Dependency);
-        
-        state.Dependency = new BuildBVHSortJob
-        {
-            BVH = _bvh,
-        }.Schedule(state.Dependency);
-        
-        state.Dependency = new BuildBVHHierarchyJob
-        {
-            BVH = _bvh,
-        }.Schedule(state.Dependency);
-        
-        // state.Dependency = new BuildBVHJob
-        // {
-        //     BVH = _bvh,
-        // }.Schedule(state.Dependency);
-        
-        // state.Dependency = new QueryBVHRecursiveJob()
-        // {
-        //     BVH = _bvh,
-        // }.ScheduleParallel(state.Dependency);
-        //
-        // state.Dependency = new QueryBVHStackJob()
-        // {
-        //     BVH = _bvh,
-        // }.ScheduleParallel(state.Dependency);
     }
     
     [BurstCompile]
@@ -178,15 +271,16 @@ partial struct SpatialQueryTesterSystem : ISystem
     [BurstCompile]
     public partial struct QueryBVHRecursiveJob : IJobEntity, IJobEntityChunkBeginEnd
     {
+        public float QueryScale;
         [ReadOnly]
         public BVH<TestNodeData> BVH;
         
         private UnsafeList<TestNodeData> results;
         
-        public void Execute(in LocalTransform transform, ref BVHTestObject test)
+        public void Execute(Entity entity, in LocalTransform transform, ref BVHTestObject test)
         {
             results.Clear();
-            AABB aabb = AABB.FromCenterExtents(transform.Position, test.AABBExtents * transform.Scale * 5f);
+            AABB aabb = AABB.FromCenterExtents(transform.Position, test.AABBExtents * transform.Scale * QueryScale);
             
             BVH.QueryAABBRecursive(aabb, ref results);
             
@@ -212,6 +306,7 @@ partial struct SpatialQueryTesterSystem : ISystem
     [BurstCompile]
     public partial struct QueryBVHStackJob : IJobEntity, IJobEntityChunkBeginEnd
     {
+        public float QueryScale;
         [ReadOnly]
         public BVH<TestNodeData> BVH;
         
@@ -221,7 +316,7 @@ partial struct SpatialQueryTesterSystem : ISystem
         public void Execute(in LocalTransform transform, ref BVHTestObject test)
         {
             results.Clear();
-            AABB aabb = AABB.FromCenterExtents(transform.Position, test.AABBExtents * 10f);
+            AABB aabb = AABB.FromCenterExtents(transform.Position, test.AABBExtents * transform.Scale * QueryScale);
             
             BVH.QueryAABBStack(aabb, ref workStack, ref results);
             
