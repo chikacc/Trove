@@ -1,9 +1,13 @@
 using Unity.Entities;
+using Unity.Mathematics;
 using UnityEngine;
 
 public struct BVHDebugger : IComponentData
 {
-    public bool LogMortonCodes;
+    public bool QueryEnabled;
+    public float3 QueryPosition;
+    public float3 QueryExtents;
+    
     public bool DebugMortonCurve;
     public int MortonCurveDebugIterations;
     
@@ -13,7 +17,9 @@ public struct BVHDebugger : IComponentData
 
 class BVHDebuggerBehaviour : MonoBehaviour
 {
-    public bool LogMortonCodes;
+    public bool QueryEnabled;
+    public float3 QueryExtents;
+    
     public bool DebugMortonCurve;
     public int MortonCurveDebugIterations = int.MaxValue;
     
@@ -34,7 +40,10 @@ class BVHDebuggerBehaviour : MonoBehaviour
     {
         World.EntityManager.SetComponentData(Entity, new BVHDebugger
         {
-            LogMortonCodes = LogMortonCodes,
+            QueryEnabled = QueryEnabled,
+            QueryPosition = transform.position,
+            QueryExtents = QueryExtents,
+            
             DebugMortonCurve = DebugMortonCurve,
             MortonCurveDebugIterations = MortonCurveDebugIterations,
             

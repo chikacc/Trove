@@ -115,11 +115,11 @@ partial struct SpatialQueryTesterSystem : ISystem
             //     BVH = _bvh,
             // }.Schedule(state.Dependency);
 
-            // state.Dependency = new QueryBVHRecursiveJob()
-            // {
-            //     QueryScale = tester.QueryScale,
-            //     BVH = _bvh,
-            // }.ScheduleParallel(state.Dependency);
+            state.Dependency = new QueryBVHRecursiveJob()
+            {
+                QueryScale = tester.QueryScale,
+                BVH = _bvh,
+            }.ScheduleParallel(state.Dependency);
 
             state.Dependency = new QueryBVHStackJob()
             {
@@ -135,29 +135,6 @@ partial struct SpatialQueryTesterSystem : ISystem
                 _debugDrawGroup.Clear();
                 state.Dependency.Complete();
 
-                // if (debugger.LogMortonCodes)
-                // {
-                //     _bvh.GetNodes(out UnsafeList<BVHNode> nodes, 
-                //         out UnsafeList<StartIndexAndCount> levelStartIndexesAndCounts);
-                //     
-                //     string log = "MortonCodes:";
-                //     log += "\n------------------------------------";
-                //     if (levelStartIndexesAndCounts.Length > 0)
-                //     {
-                //         StartIndexAndCount leafNodesData = levelStartIndexesAndCounts[0];
-                //
-                //         for (int i = leafNodesData.StartIndex; 
-                //              i < leafNodesData.StartIndex + leafNodesData.Count; 
-                //              i++)
-                //         {
-                //             BVHNode node = nodes[i];
-                //             log += $"\n{i}: {node.MortonCode}";
-                //         }
-                //         
-                //         Debug.Log(log);
-                //     }
-                // }
-            
                 if (debugger.DebugMortonCurve)
                 {
                     _bvh.GetNodes(out UnsafeList<BVHNode> nodes, 
@@ -196,6 +173,46 @@ partial struct SpatialQueryTesterSystem : ISystem
                                 UnityEngine.Color.green);
                         }
                     }
+                }
+
+                if (debugger.QueryEnabled)
+                {
+                    ComponentLookup<LocalTransform> localTransformLookup = state.GetComponentLookup<LocalTransform>(true);
+                    ComponentLookup<BVHTestObject> bvhTestObjectLookup = state.GetComponentLookup<BVHTestObject>(true);
+                    
+                    UnsafeList<TestNodeData> results = new UnsafeList<TestNodeData>(2000, Allocator.Temp);
+                    UnsafeList<int> workStack = new UnsafeList<int>(5000, Allocator.Temp);
+
+                    results.Clear();
+                    AABB aabb = AABB.FromCenterExtents(debugger.QueryPosition,
+                        debugger.QueryExtents);
+
+                    _bvh.QueryAABBStack(aabb, ref workStack, ref results);
+                    
+                    // Draw query bounds
+                    _debugDrawGroup.DrawWireBox(
+                        debugger.QueryPosition, 
+                        quaternion.identity,
+                        debugger.QueryExtents, 
+                        UnityEngine.Color.blue);
+                    
+                    // Draw query results
+                    for (int i = 0; i < results.Length; i++)
+                    {
+                        Entity resultEntity = results[i].Entity;
+                        if (localTransformLookup.TryGetComponent(resultEntity, out LocalTransform resultTransform) &&
+                            bvhTestObjectLookup.TryGetComponent(resultEntity, out BVHTestObject resultBVHTestObject))
+                        {
+                            _debugDrawGroup.DrawWireBox(
+                                resultTransform.Position, 
+                                quaternion.identity,
+                                resultTransform.Scale * resultBVHTestObject.AABBExtents, 
+                                UnityEngine.Color.red);
+                        }
+                    }
+
+                    results.Dispose();
+                    workStack.Dispose();
                 }
             }
         }
