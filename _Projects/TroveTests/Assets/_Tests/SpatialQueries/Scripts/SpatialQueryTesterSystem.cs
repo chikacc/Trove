@@ -94,26 +94,8 @@ partial struct SpatialQueryTesterSystem : ISystem
             {
                 BVH = _bvh,
             }.Schedule(state.Dependency);
-
-            state.Dependency = new BuildBVHMortonJob()
-            {
-                BVH = _bvh,
-            }.Schedule(state.Dependency);
-
-            state.Dependency = new BuildBVHSortJob
-            {
-                BVH = _bvh,
-            }.Schedule(state.Dependency);
-
-            state.Dependency = new BuildBVHHierarchyJob
-            {
-                BVH = _bvh,
-            }.Schedule(state.Dependency);
-
-            // state.Dependency = new BuildBVHJob
-            // {
-            //     BVH = _bvh,
-            // }.Schedule(state.Dependency);
+            
+            state.Dependency = _bvh.ScheduleBuildJobs(state.Dependency);
 
             state.Dependency = new QueryBVHRecursiveJob()
             {
@@ -238,50 +220,6 @@ partial struct SpatialQueryTesterSystem : ISystem
         {
             AABB aabb = AABB.FromCenterExtents(transform.Position, test.AABBExtents * transform.Scale);
             BVH.Add(new TestNodeData { Entity = entity }, aabb);
-        }
-    }
-    
-    [BurstCompile]
-    public struct BuildBVHMortonJob : IJob
-    {
-        public BVH<TestNodeData> BVH;
-        
-        public void Execute()
-        {
-            BVH.Build_Mortons();
-        }
-    }
-    
-    [BurstCompile]
-    public struct BuildBVHSortJob : IJob
-    {
-        public BVH<TestNodeData> BVH;
-        
-        public void Execute()
-        {
-            BVH.Build_Sort();
-        }
-    }
-    
-    [BurstCompile]
-    public struct BuildBVHHierarchyJob : IJob
-    {
-        public BVH<TestNodeData> BVH;
-        
-        public void Execute()
-        {
-            BVH.Build_Hierarchy();
-        }
-    }
-    
-    [BurstCompile]
-    public struct BuildBVHJob : IJob
-    {
-        public BVH<TestNodeData> BVH;
-        
-        public void Execute()
-        {
-            BVH.Build();
         }
     }
 

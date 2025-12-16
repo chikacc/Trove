@@ -1,10 +1,12 @@
 using System;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Entities;
 using Unity.Jobs;
+using Unity.Jobs.LowLevel.Unsafe;
 using Unity.Mathematics;
 using UnityEngine;
 
@@ -46,7 +48,7 @@ namespace Trove.SpatialQueries
         {
             BVH<TNodeData> bvh = new BVH<TNodeData>();
             bvh.Nodes = new NativeList<BVHNode>(
-                ComputeTotalNodesCountForEntries(initialElementsCapacity), 
+                BVHUtils.ComputeTotalNodesCountForEntries(initialElementsCapacity), 
                 allocator);
             bvh.LeafNodeDatas = new NativeList<TNodeData>(initialElementsCapacity, allocator);
             bvh.NodeLevelStartIndexesAndCounts = new NativeList<StartIndexAndCount>(32, allocator);
@@ -76,20 +78,6 @@ namespace Trove.SpatialQueries
                 SceneAABB.Dispose(jobHandle);
             }
         }
-
-        public void EnsureElementsCapacity(int elementsCapacity)
-        {
-            int nodesCount = ComputeTotalNodesCountForEntries(elementsCapacity);
-            if (Nodes.Capacity < nodesCount)
-            {
-                Nodes.SetCapacity(nodesCount);
-            }
-
-            if (LeafNodeDatas.Capacity < elementsCapacity)
-            {
-                LeafNodeDatas.SetCapacity(elementsCapacity);
-            }
-        }
         
         public void Clear()
         {
@@ -113,161 +101,30 @@ namespace Trove.SpatialQueries
             LeafNodeDatas.Add(nodeData);
         }
 
-        public unsafe void Build_Mortons()
+        public JobHandle ScheduleBuildJobs(JobHandle dep)
         {
-            // Compute morton codes (from normalized position relative to scene AABB)
-            AABB sceneAABB = SceneAABB.Value;
-            float3 sceneDimensions = sceneAABB.Max - sceneAABB.Min;
-            BVHNode* nodesPtr = Nodes.GetUnsafePtr();
-            for (int i = 0; i < Nodes.Length; i++)
-            {
-                ref BVHNode nodeRef = ref UnsafeUtility.ArrayElementAsRef<BVHNode>(nodesPtr, i);
-                float3 normalizedPosition = (nodeRef.AABB.GetCenter() - sceneAABB.Min) / sceneDimensions; // Position from 0f to 1f in the scene
-                nodeRef.MortonCode = ComputeMortonCode(normalizedPosition);
-            }
-        }
+            int workerCount = JobsUtility.JobWorkerCount;
 
-        public unsafe void Build_Sort()
-        {
-            // Sort by morton order
-            Nodes.Sort();
-        }
+            dep = new BVHBuildMortonCodesJob
+            {
+                WorkerCount = workerCount,
+                SceneAABB = SceneAABB,
+                Nodes = Nodes,
+            }.ScheduleParallel(workerCount, 1, dep);
+            
+            dep = new BVHSortNodesJob
+            {
+                Nodes = Nodes,
+            }.Schedule(dep);
+            
+            dep = new BVHBuildHierarchyJob
+            {
+                SceneAABB = SceneAABB,
+                Nodes = Nodes,
+                NodeLevelStartIndexesAndCounts = NodeLevelStartIndexesAndCounts,
+            }.Schedule(dep);
 
-        public unsafe void Build_Hierarchy()
-        {
-            // If nodes count is not even, add padding node
-            if (Nodes.Length % 2 != 0)
-            {
-                Nodes.Add(new BVHNode
-                {
-                    DataIndex = -1,
-                    AABB = Nodes[Nodes.Length - 1].AABB,
-                });
-            }
-            
-            // Build node hierarchy
-            int nodesStartForLevel = 0;
-            int nodesCountForLevel = Nodes.Length;
-            while (nodesCountForLevel > 1)
-            {
-                NodeLevelStartIndexesAndCounts.Add(new StartIndexAndCount
-                {
-                    StartIndex = nodesStartForLevel,
-                    Count = nodesCountForLevel,
-                });
-                
-                int nodesLengthBeforeAdd = Nodes.Length;
-                
-                for (int i = nodesStartForLevel; i < nodesLengthBeforeAdd; i += 2)
-                {
-                    AABB aabb = Nodes[i].AABB;
-                    aabb.Include(Nodes[i + 1].AABB);
-
-                    Nodes.Add(new BVHNode
-                    {
-                        AABB = aabb,
-                        DataIndex = i,
-                    });
-                }
-            
-                nodesStartForLevel = nodesLengthBeforeAdd;
-                nodesCountForLevel = Nodes.Length - nodesLengthBeforeAdd;
-                
-                // If nodes count is not even amd is not root node, add padding node
-                if (nodesCountForLevel > 1 && nodesCountForLevel % 2 != 0)
-                {
-                    Nodes.Add(new BVHNode
-                    {
-                        DataIndex = -1,
-                        AABB = Nodes[Nodes.Length - 1].AABB,
-                    });
-                    nodesCountForLevel += 1;
-                }
-            }
-            
-            // Add final level
-            NodeLevelStartIndexesAndCounts.Add(new StartIndexAndCount
-            {
-                StartIndex = nodesStartForLevel,
-                Count = nodesCountForLevel,
-            });
-        }
-
-        public unsafe void Build()
-        {
-            if(Nodes.Length == 0)
-                return;
-            
-            // Compute morton codes (from normalized position relative to scene AABB)
-            AABB sceneAABB = SceneAABB.Value;
-            float3 sceneDimensions = sceneAABB.Max - sceneAABB.Min;
-            BVHNode* nodesPtr = Nodes.GetUnsafePtr();
-            for (int i = 0; i < Nodes.Length; i++)
-            {
-                ref BVHNode nodeRef = ref UnsafeUtility.ArrayElementAsRef<BVHNode>(nodesPtr, i);
-                float3 normalizedPosition = (nodeRef.AABB.GetCenter() - sceneAABB.Min) / sceneDimensions; // Position from 0f to 1f in the scene
-                nodeRef.MortonCode = ComputeMortonCode(normalizedPosition);
-            }
-            
-            // Sort by morton order
-            Nodes.Sort();
-            
-            // If nodes count is not even, add padding node
-            if (Nodes.Length % 2 != 0)
-            {
-                Nodes.Add(new BVHNode
-                {
-                    DataIndex = -1,
-                    AABB = Nodes[Nodes.Length - 1].AABB,
-                });
-            }
-            
-            // Build node hierarchy
-            int nodesStartForLevel = 0;
-            int nodesCountForLevel = Nodes.Length;
-            while (nodesCountForLevel > 1)
-            {
-                NodeLevelStartIndexesAndCounts.Add(new StartIndexAndCount
-                {
-                    StartIndex = nodesStartForLevel,
-                    Count = nodesCountForLevel,
-                });
-                
-                int nodesLengthBeforeAdd = Nodes.Length;
-                
-                for (int i = nodesStartForLevel; i < nodesLengthBeforeAdd; i += 2)
-                {
-                    AABB aabb = Nodes[i].AABB;
-                    aabb.Include(Nodes[i + 1].AABB);
-
-                    Nodes.Add(new BVHNode
-                    {
-                        AABB = aabb,
-                        DataIndex = i,
-                    });
-                }
-            
-                nodesStartForLevel = nodesLengthBeforeAdd;
-                nodesCountForLevel = Nodes.Length - nodesLengthBeforeAdd;
-                
-                // If nodes count is not even amd is not root node, add padding node
-                if (nodesCountForLevel > 1 && nodesCountForLevel % 2 != 0)
-                {
-                    Nodes.Add(new BVHNode
-                    {
-                        DataIndex = -1,
-                        AABB = Nodes[Nodes.Length - 1].AABB,
-                    });
-                    nodesCountForLevel += 1;
-                }
-            }
-            
-            // Add final level
-            NodeLevelStartIndexesAndCounts.Add(new StartIndexAndCount
-            {
-                StartIndex = nodesStartForLevel,
-                Count = nodesCountForLevel,
-            });
+            return dep;
         }
 
         public unsafe void GetNodes(out UnsafeList<BVHNode> nodes,
@@ -331,8 +188,11 @@ namespace Trove.SpatialQueries
         {
             // TODO
         }
+    }
 
-        private static int ComputeTotalNodesCountForEntries(int entriesCount)
+    internal static class BVHUtils
+    {
+        internal static int ComputeTotalNodesCountForEntries(int entriesCount)
         {
             // Make entries count even
             if (entriesCount % 2 != 0)
@@ -357,7 +217,7 @@ namespace Trove.SpatialQueries
         /// The nPos is a normalized position from 0,0,0 to 1,1,1
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static uint ComputeMortonCode(float3 nPos)
+        internal static uint ComputeMortonCode(float3 nPos)
         {
             // The normalized position coords get turned into a 0f to 1023f range. We want the 1023 range because
             // 1023 as a uint in binary is 1111111111, which is 10 bits. Later this will allow us to store the 3
@@ -384,13 +244,123 @@ namespace Trove.SpatialQueries
         /// By ending up with a 30 bit value, we then have 2 free spaces left to "shift" the bits for interleaving later.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static uint ExpandBits(uint val)
+        internal static uint ExpandBits(uint val)
         {
             val = (val * 0x00010001u) & 0xFF0000FFu;
             val = (val * 0x00000101u) & 0x0F00F00Fu;
             val = (val * 0x00000011u) & 0xC30C30C3u;
             val = (val * 0x00000005u) & 0x49249249u;
             return val;
+        }
+    }
+
+    [BurstCompile]
+    public unsafe struct BVHBuildMortonCodesJob : IJobFor
+    {
+        public int WorkerCount;
+        [ReadOnly]
+        public NativeReference<AABB> SceneAABB;
+        [NativeDisableParallelForRestriction]
+        public NativeList<BVHNode> Nodes;
+        
+        public void Execute(int index)
+        {
+            int nodesPerWorker = (int)math.ceil((float)Nodes.Length / (float)WorkerCount);
+            int startIndex = index * nodesPerWorker;
+            
+            // Compute morton codes (from normalized position relative to scene AABB)
+            AABB sceneAABB = SceneAABB.Value;
+            float3 sceneDimensions = sceneAABB.Max - sceneAABB.Min;
+            BVHNode* nodesPtr = Nodes.GetUnsafePtr();
+            for (int i = startIndex; i < math.min(Nodes.Length, startIndex + nodesPerWorker); i++)
+            {
+                ref BVHNode nodeRef = ref UnsafeUtility.ArrayElementAsRef<BVHNode>(nodesPtr, i);
+                float3 normalizedPosition = (nodeRef.AABB.GetCenter() - sceneAABB.Min) / sceneDimensions; // Position from 0f to 1f in the scene
+                nodeRef.MortonCode = BVHUtils.ComputeMortonCode(normalizedPosition);
+            }
+        }
+    }
+
+    [BurstCompile]
+    public unsafe struct BVHSortNodesJob : IJob
+    {
+        public NativeList<BVHNode> Nodes;
+        
+        public void Execute()
+        {
+            Nodes.Sort();
+        }
+    }
+
+    [BurstCompile]
+    public unsafe struct BVHBuildHierarchyJob : IJob
+    {
+        public NativeReference<AABB> SceneAABB;
+        public NativeList<BVHNode> Nodes;
+        // TODO: mostly for debug. Keep it?
+        public NativeList<StartIndexAndCount> NodeLevelStartIndexesAndCounts;
+        
+        public void Execute()
+        {
+            if(Nodes.Length < 2)
+                return;
+            
+            // If nodes count is not even, add padding node
+            if (Nodes.Length % 2 != 0)
+            {
+                Nodes.Add(new BVHNode
+                {
+                    DataIndex = -1,
+                    AABB = Nodes[Nodes.Length - 1].AABB,
+                });
+            }
+            
+            // Build node hierarchy
+            int nodesStartForLevel = 0;
+            int nodesCountForLevel = Nodes.Length;
+            while (nodesCountForLevel > 1)
+            {
+                NodeLevelStartIndexesAndCounts.Add(new StartIndexAndCount
+                {
+                    StartIndex = nodesStartForLevel,
+                    Count = nodesCountForLevel,
+                });
+                
+                int nodesLengthBeforeAdd = Nodes.Length;
+                
+                for (int i = nodesStartForLevel; i < nodesLengthBeforeAdd; i += 2)
+                {
+                    AABB aabb = Nodes[i].AABB;
+                    aabb.Include(Nodes[i + 1].AABB);
+
+                    Nodes.Add(new BVHNode
+                    {
+                        AABB = aabb,
+                        DataIndex = i,
+                    });
+                }
+            
+                nodesStartForLevel = nodesLengthBeforeAdd;
+                nodesCountForLevel = Nodes.Length - nodesLengthBeforeAdd;
+                
+                // If nodes count is not even amd is not root node, add padding node
+                if (nodesCountForLevel > 1 && nodesCountForLevel % 2 != 0)
+                {
+                    Nodes.Add(new BVHNode
+                    {
+                        DataIndex = -1,
+                        AABB = Nodes[Nodes.Length - 1].AABB,
+                    });
+                    nodesCountForLevel += 1;
+                }
+            }
+            
+            // Add final level
+            NodeLevelStartIndexesAndCounts.Add(new StartIndexAndCount
+            {
+                StartIndex = nodesStartForLevel,
+                Count = nodesCountForLevel,
+            });
         }
     }
 }
