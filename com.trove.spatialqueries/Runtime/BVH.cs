@@ -155,13 +155,42 @@ namespace Trove.SpatialQueries
                 Nodes = UnsortedNodes,
             }.ScheduleParallel(workerCount, 1, dep);
             
-            dep = new BVHSortNodesJob
+            // Parallel radix sort nodes by morton code
             {
-                UnsortedNodes = UnsortedNodes,
-                SortedNodes = SortedNodes,
-                SortingNodeBuckets = SortingNodeBuckets,
-            }.Schedule(dep);
-            
+                dep = new BVHSortNodesInitialJob
+                {
+                    UnsortedNodes = UnsortedNodes,
+                    SortingNodeBuckets = SortingNodeBuckets,
+                }.Schedule(dep);
+
+                // For each digit index...
+                for (int digitIndex = 0; digitIndex < BVHUtils.NbDigitsMortonCode; digitIndex++)
+                {
+                    // Launch one job per digit value...
+                    dep = new BVHSortNodesParallelJob
+                    {
+                        DigitIndex = digitIndex,
+                        UnsortedNodes = UnsortedNodes,
+                        SortingNodeBuckets = SortingNodeBuckets,
+                    }.ScheduleParallel(BVHUtils.NbValuesPerMortonCodeDigit, 1, dep);
+
+                    // Then merge
+                    dep = new BVHSortNodesMergeJob()
+                    {
+                        DigitIndex = digitIndex,
+                        UnsortedNodes = UnsortedNodes,
+                        SortingNodeBuckets = SortingNodeBuckets,
+                    }.Schedule(dep);
+                }
+
+                dep = new BVHSortNodesFinalJob()
+                {
+                    UnsortedNodes = UnsortedNodes,
+                    SortedNodes = SortedNodes,
+                    SortingNodeBuckets = SortingNodeBuckets,
+                }.Schedule(dep);
+            }
+
             dep = new BVHBuildHierarchyJob
             {
                 SortedNodes = SortedNodes,
@@ -329,18 +358,14 @@ namespace Trove.SpatialQueries
     }
 
     [BurstCompile]
-    public unsafe struct BVHSortNodesJob : IJob
+    public struct BVHSortNodesInitialJob : IJob
     {
+        [ReadOnly]
         public NativeList<BVHNode> UnsortedNodes;
-        public NativeList<BVHNode> SortedNodes;
         public NativeList<UnsafeList<int>> SortingNodeBuckets;
-        
+
         public void Execute()
         {
-            // Radix Sort
-            
-            // Init sorting lists
-            SortedNodes.Resize(UnsortedNodes.Length, NativeArrayOptions.UninitializedMemory);
             UnsafeList<int> srcNodes = SortingNodeBuckets[SortingNodeBuckets.Length - 2];
             UnsafeList<int> dstNodes = SortingNodeBuckets[SortingNodeBuckets.Length - 1];
             srcNodes.Resize(UnsortedNodes.Length, NativeArrayOptions.UninitializedMemory);
@@ -351,72 +376,114 @@ namespace Trove.SpatialQueries
             }
             SortingNodeBuckets[SortingNodeBuckets.Length - 2] = srcNodes;
             SortingNodeBuckets[SortingNodeBuckets.Length - 1] = dstNodes;
-            
+        }
+    }
+
+    [BurstCompile]
+    public unsafe struct BVHSortNodesParallelJob : IJobFor
+    {
+        public int DigitIndex;
+        [ReadOnly]
+        public NativeList<BVHNode> UnsortedNodes;
+        [NativeDisableParallelForRestriction]
+        public NativeList<UnsafeList<int>> SortingNodeBuckets;
+
+        public void Execute(int digitValueForWorker)
+        {
             // Powers of 10
             Span<uint> powersOfTen = stackalloc uint[]
-                {   1, 
-                    10, 
-                    100, 
-                    1000, 
-                    10000, 
-                    100000, 
-                    1000000, 
-                    10000000,
-                    100000000,
-                    1000000000 };
-            
-            //Debug.Log($"Initial: {UnsortedNodes[srcNodes[0]].MortonCode}, {UnsortedNodes[srcNodes[1]].MortonCode}, {UnsortedNodes[srcNodes[2]].MortonCode}, {UnsortedNodes[srcNodes[3]].MortonCode}, {UnsortedNodes[srcNodes[4]].MortonCode}, {UnsortedNodes[srcNodes[5]].MortonCode}, {UnsortedNodes[srcNodes[6]].MortonCode}, {UnsortedNodes[srcNodes[7]].MortonCode}, {UnsortedNodes[srcNodes[8]].MortonCode}, {UnsortedNodes[srcNodes[9]].MortonCode}");
-            
-            // For each digit index of the morton code...
-            for (int digitIndex = 0; digitIndex < BVHUtils.NbDigitsMortonCode; digitIndex++)
             {
-                // Swap dst and src nodes
-                if (digitIndex % 2 == 0)
-                {
-                    srcNodes = SortingNodeBuckets[SortingNodeBuckets.Length - 2];
-                    dstNodes = SortingNodeBuckets[SortingNodeBuckets.Length - 1];
-                }
-                else
-                {
-                    // Note: on final iteration (9), the results will be at "Length - 2"
-                    srcNodes = SortingNodeBuckets[SortingNodeBuckets.Length - 1];
-                    dstNodes = SortingNodeBuckets[SortingNodeBuckets.Length - 2];
-                }
-                
-                // Get the digit at that index for each node, and put it in the corresponding bucket
-                for (int srcNodeIndex = 0; srcNodeIndex < srcNodes.Length; srcNodeIndex++)
-                {
-                    uint mortonCode = UnsortedNodes[srcNodes[srcNodeIndex]].MortonCode;
-                    int digitValue = (int)((mortonCode / powersOfTen[digitIndex]) % 10);
+                1,
+                10,
+                100,
+                1000,
+                10000,
+                100000,
+                1000000,
+                10000000,
+                100000000,
+                1000000000
+            };
+            
+            UnsafeList<int> bucketList = SortingNodeBuckets[digitValueForWorker];
 
-                    UnsafeList<int> bucketList = SortingNodeBuckets[digitValue];
-                    bucketList.AddWithGrowFactor(srcNodes[srcNodeIndex], 2f);
-                    SortingNodeBuckets[digitValue] = bucketList;
-                }
-                
-                // Update sorted nodes from buckets
-                int* dstPtr = dstNodes.Ptr;
-                for (int bucketIndex = 0; bucketIndex < BVHUtils.NbValuesPerMortonCodeDigit; bucketIndex++)
-                {
-                    UnsafeList<int> bucketList = SortingNodeBuckets[bucketIndex];
-                    UnsafeUtility.MemCpy(dstPtr, bucketList.Ptr, UnsafeUtility.SizeOf<int>() * bucketList.Length);
-                    dstPtr = dstPtr + (long)bucketList.Length;
-                    bucketList.Clear();
-                    SortingNodeBuckets[bucketIndex] = bucketList;
-                }
-                
-                //Debug.Log($"At digit {digitIndex}: {UnsortedNodes[dstNodes[0]].MortonCode}, {UnsortedNodes[dstNodes[1]].MortonCode}, {UnsortedNodes[dstNodes[2]].MortonCode}, {UnsortedNodes[dstNodes[3]].MortonCode}, {UnsortedNodes[dstNodes[4]].MortonCode}, {UnsortedNodes[dstNodes[5]].MortonCode}, {UnsortedNodes[dstNodes[6]].MortonCode}, {UnsortedNodes[dstNodes[7]].MortonCode}, {UnsortedNodes[dstNodes[8]].MortonCode}, {UnsortedNodes[dstNodes[9]].MortonCode}");
-
+            // Swap dst and src nodes
+            UnsafeList<int> srcNodes;
+            if (DigitIndex % 2 == 0)
+            {
+                srcNodes = SortingNodeBuckets[SortingNodeBuckets.Length - 2];
             }
+            else
+            {
+                // Note: on final iteration (9), the results will be at "Length - 2"
+                srcNodes = SortingNodeBuckets[SortingNodeBuckets.Length - 1];
+            }
+
+            // Get the digit at that index for each node, and put it in the corresponding bucket
+            for (int srcNodeIndex = 0; srcNodeIndex < srcNodes.Length; srcNodeIndex++)
+            {
+                uint mortonCode = UnsortedNodes[srcNodes[srcNodeIndex]].MortonCode;
+                int digitValue = (int)((mortonCode / powersOfTen[DigitIndex]) % 10);
+
+                if (digitValue == digitValueForWorker)
+                {
+                    bucketList.AddWithGrowFactor(srcNodes[srcNodeIndex], 2f);
+                }
+            }
+            
+            SortingNodeBuckets[digitValueForWorker] = bucketList;
+        }
+    }
+
+    [BurstCompile]
+    public unsafe struct BVHSortNodesMergeJob : IJob
+    {
+        public int DigitIndex;
+        public NativeList<BVHNode> UnsortedNodes;
+        public NativeList<UnsafeList<int>> SortingNodeBuckets;
+
+        public void Execute()
+        {
+            UnsafeList<int> dstNodes;
+            if (DigitIndex % 2 == 0)
+            {
+                dstNodes = SortingNodeBuckets[SortingNodeBuckets.Length - 1];
+            }
+            else
+            {
+                dstNodes = SortingNodeBuckets[SortingNodeBuckets.Length - 2];
+            }
+                
+            // Update sorted nodes from buckets
+            int* dstPtr = dstNodes.Ptr;
+            for (int bucketIndex = 0; bucketIndex < BVHUtils.NbValuesPerMortonCodeDigit; bucketIndex++)
+            {
+                UnsafeList<int> bucketList = SortingNodeBuckets[bucketIndex];
+                UnsafeUtility.MemCpy(dstPtr, bucketList.Ptr, UnsafeUtility.SizeOf<int>() * bucketList.Length);
+                dstPtr = dstPtr + (long)bucketList.Length;
+                bucketList.Clear();
+                SortingNodeBuckets[bucketIndex] = bucketList;
+            }
+        }
+    }
+
+    [BurstCompile]
+    public struct BVHSortNodesFinalJob : IJob
+    {
+        public NativeList<BVHNode> UnsortedNodes;
+        public NativeList<BVHNode> SortedNodes;
+        public NativeList<UnsafeList<int>> SortingNodeBuckets;
+
+        public void Execute()
+        {
+            SortedNodes.Resize(UnsortedNodes.Length, NativeArrayOptions.UninitializedMemory);
+            UnsafeList<int> dstNodes = SortingNodeBuckets[SortingNodeBuckets.Length - 2];
             
             // Process final sorted results
             for (int i = 0; i < dstNodes.Length; i++)
             {
                 SortedNodes[i] = UnsortedNodes[dstNodes[i]];
             }
-                
-            //Debug.Log($"Final: {SortedNodes[0].MortonCode}, {SortedNodes[1].MortonCode}, {SortedNodes[2].MortonCode}, {SortedNodes[3].MortonCode}, {SortedNodes[4].MortonCode}, {SortedNodes[5].MortonCode}, {SortedNodes[6].MortonCode}, {SortedNodes[7].MortonCode}, {SortedNodes[8].MortonCode}, {SortedNodes[9].MortonCode}");
-
         }
     }
 
