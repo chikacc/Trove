@@ -2,7 +2,7 @@
   "displayName": "Trove Common",
   "description": "Trove Common provides various tools and utilities that may be used by other Trove packages, or by any project in general.",
   "dependencies": {
-    "com.unity.entities": "1.3.10"
+    "com.unity.entities": "1.4.2"
   },
   "name": "com.trove.common",
   "author": {
@@ -10,5 +10,5 @@
   },
   "unity": "6000.0",
   "unityRelease": "0f1",
-  "version": "0.3.3"
+  "version": "0.3.4"
 }
