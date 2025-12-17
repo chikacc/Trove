@@ -92,8 +92,6 @@ partial struct SpatialQueryTesterSystem : ISystem
             
             // ---------------------------------------------------------------
 
-            EntityQuery testElementsQuery = SystemAPI.QueryBuilder().WithAll<LocalTransform, BVHTestObject>().Build();
-
             state.Dependency = _bvh.ScheduleClearJob(state.Dependency);
 
             state.Dependency = new AddToBVHJob
@@ -111,11 +109,11 @@ partial struct SpatialQueryTesterSystem : ISystem
             //     BVH = _bvh,
             // }.ScheduleParallel(state.Dependency);
             //
-            state.Dependency = new QueryBVHStackJob()
-            {
-                QueryScale = tester.QueryScale,
-                BVH = _bvh,
-            }.ScheduleParallel(state.Dependency);
+            // state.Dependency = new QueryBVHStackJob()
+            // {
+            //     QueryScale = tester.QueryScale,
+            //     BVH = _bvh,
+            // }.ScheduleParallel(state.Dependency);
 
             // ---------------------------------------------------------------
             

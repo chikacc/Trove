@@ -9,6 +9,7 @@ using Unity.Jobs;
 using Unity.Jobs.LowLevel.Unsafe;
 using Unity.Mathematics;
 using UnityEngine;
+using UnityEngine.Assertions;
 
 namespace Trove.SpatialQueries
 {
@@ -37,10 +38,14 @@ namespace Trove.SpatialQueries
         public int Count;
     }
 
-    internal struct SortingNode
+    internal struct WorkerLoadBalancingData
     {
-        public int Next;
-        public int NodeIndex;
+        public int SliceStartIndex;
+        public int SlicesLength;
+        public int ElementsStartIndex;
+        public int ElementsCount;
+        public uint MinValue;
+        public uint MaxValue;
     }
 
     public struct BVH<TNodeData> where TNodeData : unmanaged
@@ -50,8 +55,8 @@ namespace Trove.SpatialQueries
         internal NativeList<TNodeData> LeafNodeDatas;
         internal NativeList<StartIndexAndCount> NodeLevelStartIndexesAndCounts;
         internal NativeReference<AABB> SceneAABB;
-        internal NativeList<UnsafeList<int>> SortingNodeBuckets;
-        internal NativeList<UnsafeList<int>> SortingNodeIndexes;
+        internal NativeList<int> NodesHistogram;
+        internal NativeList<WorkerLoadBalancingData> WorkerLoadBalancingDatas;
 
         public static BVH<TNodeData> Create(Allocator allocator, int initialElementsCapacity)
         {
@@ -63,16 +68,9 @@ namespace Trove.SpatialQueries
             bvh.LeafNodeDatas = new NativeList<TNodeData>(initialElementsCapacity, allocator);
             bvh.NodeLevelStartIndexesAndCounts = new NativeList<StartIndexAndCount>(32, allocator);
             bvh.SceneAABB = new NativeReference<AABB>(allocator);
-            bvh.SortingNodeBuckets = new NativeList<UnsafeList<int>>(BVHUtils.NbValuesPerMortonCodeDigit, allocator);
-            bvh.SortingNodeBuckets.Resize(BVHUtils.NbValuesPerMortonCodeDigit, NativeArrayOptions.ClearMemory);
-            for (int i = 0; i < BVHUtils.NbValuesPerMortonCodeDigit; i++)
-            {
-                bvh.SortingNodeBuckets[i] = new UnsafeList<int>(256, allocator);
-            }
-            bvh.SortingNodeIndexes = new NativeList<UnsafeList<int>>(2, allocator);
-            bvh.SortingNodeIndexes.Resize(2, NativeArrayOptions.ClearMemory);
-            bvh.SortingNodeIndexes[0] = new UnsafeList<int>(bvh.UnsortedNodes.Capacity, allocator);
-            bvh.SortingNodeIndexes[1] = new UnsafeList<int>(bvh.UnsortedNodes.Capacity, allocator);
+            bvh.NodesHistogram = new NativeList<int>(BVHUtils.NodesHistogramSlicesCount, allocator);
+            bvh.NodesHistogram.Resize(bvh.NodesHistogram.Capacity, NativeArrayOptions.ClearMemory);
+            bvh.WorkerLoadBalancingDatas = new NativeList<WorkerLoadBalancingData>(16, allocator);
             return bvh;
         }
 
@@ -103,51 +101,14 @@ namespace Trove.SpatialQueries
                 SceneAABB.Dispose(jobHandle);
             }
 
-            if (SortingNodeBuckets.IsCreated)
+            if (NodesHistogram.IsCreated)
             {
-                for (int i = 0; i < SortingNodeBuckets.Length; i++)
-                {
-                    if (SortingNodeBuckets[i].IsCreated)
-                    {
-                        SortingNodeBuckets[i].Dispose(jobHandle);
-                    }
-                }
-                
-                SortingNodeBuckets.Dispose(jobHandle);
+                NodesHistogram.Dispose(jobHandle);
             }
 
-            if (SortingNodeIndexes.IsCreated)
+            if (WorkerLoadBalancingDatas.IsCreated)
             {
-                for (int i = 0; i < SortingNodeIndexes.Length; i++)
-                {
-                    if (SortingNodeIndexes[i].IsCreated)
-                    {
-                        SortingNodeIndexes[i].Dispose(jobHandle);
-                    }
-                }
-                
-                SortingNodeIndexes.Dispose(jobHandle);
-            }
-        }
-        
-        public void Clear()
-        {
-            UnsortedNodes.Clear();
-            SortedNodes.Clear();
-            LeafNodeDatas.Clear();
-            NodeLevelStartIndexesAndCounts.Clear();
-            SceneAABB.Value = AABB.GetEmpty();
-            for (int i = 0; i < SortingNodeBuckets.Length; i++)
-            {
-                UnsafeList<int> bucketList = SortingNodeBuckets[i];
-                bucketList.Clear();
-                SortingNodeBuckets[i] = bucketList;
-            }
-            for (int i = 0; i < SortingNodeIndexes.Length; i++)
-            {
-                UnsafeList<int> indexList = SortingNodeIndexes[i];
-                indexList.Clear();
-                SortingNodeIndexes[i] = indexList;
+                WorkerLoadBalancingDatas.Dispose(jobHandle);
             }
         }
 
@@ -185,46 +146,67 @@ namespace Trove.SpatialQueries
                 UnsortedNodes = UnsortedNodes,
             }.ScheduleParallel(workerCount, 1, dep);
             
-            // Parallel radix sort nodes by morton code
             if(useParallelSort)
             {
-                dep = new BVHSortNodesInitialJob
+                dep = new BVHInitializeSortJob
                 {
                     WorkerCount = workerCount,
                     UnsortedNodes = UnsortedNodes,
-                    SortingNodeBuckets = SortingNodeBuckets,
-                    SortingNodeIndexes = SortingNodeIndexes,
+                    SortedNodes = SortedNodes,
+                    NodesHistogram = NodesHistogram,
+                    WorkerLoadBalancingData = WorkerLoadBalancingDatas,
                 }.Schedule(dep);
-
-                // For each digit index...
-                for (int digitIndex = 0; digitIndex < BVHUtils.NbDigitsMortonCode; digitIndex++)
+                
+                dep = new BVHComputeNodesHistogramJob
                 {
-                    // Launch one job per digit value...
-                    dep = new BVHSortNodesParallelJob
-                    {
-                        WorkerCount = workerCount,
-                        DigitIndex = digitIndex,
-                        UnsortedNodes = UnsortedNodes,
-                        SortingNodeBuckets = SortingNodeBuckets,
-                        SortingNodeIndexes = SortingNodeIndexes,
-                    }.ScheduleParallel(workerCount, 1, dep);
-
-                    // Then merge
-                    dep = new BVHSortNodesMergeJob()
-                    {
-                        WorkerCount = workerCount,
-                        DigitIndex = digitIndex,
-                        SortingNodeBuckets = SortingNodeBuckets,
-                        SortingNodeIndexes = SortingNodeIndexes,
-                    }.Schedule(dep);
-                }
-
-                dep = new BVHSortNodesFinalJob()
+                    WorkerCount = workerCount,
+                    UnsortedNodes = UnsortedNodes,
+                    NodesHistogram = NodesHistogram,
+                }.ScheduleParallel(workerCount, 1, dep);
+                
+                dep = new BVHMergeHistogramsAndComputeLoadBalancingJob
+                {
+                    WorkerCount = workerCount,
+                    UnsortedNodes = UnsortedNodes,
+                    NodesHistogram = NodesHistogram,
+                    WorkerLoadBalancingData = WorkerLoadBalancingDatas,
+                }.Schedule(dep);
+                
+                dep = new BVHParallelSortJob()
                 {
                     UnsortedNodes = UnsortedNodes,
                     SortedNodes = SortedNodes,
-                    SortingNodeIndexes = SortingNodeIndexes,
-                }.Schedule(dep);
+                    WorkerLoadBalancingData = WorkerLoadBalancingDatas,
+                }.ScheduleParallel(workerCount, 1, dep);
+                
+                
+                // // TODO
+                // // Do 3 iterations of recursive MSDRadixSort, which will create 1000 buckets.
+                // // Then, do regular sort on each bucket
+                //
+                //
+                // // For each digit index from most significant to least significant
+                // int bucketsCount = 1;
+                // for (int digitIndex = BVHUtils.NbDigitsIndexesInMortonCode - 1; digitIndex >= 0; digitIndex--)
+                // {
+                //     // At each iteration, we create 10 buckets per previously created bucket.
+                //     // So at each iteration, we want to do a MSD Radix sort of each new bucket.
+                //     dep = new BVHMSDRadixSortBucketJob
+                //     {
+                //         WorkerCount = workerCount,
+                //         DigitIndex = digitIndex,
+                //         UnsortedNodes = UnsortedNodes,
+                //         bucketIndex = NodesHistogram,
+                //     }.ScheduleParallel(bucketsCount, 1, dep);
+                //
+                //     bucketsCount *= BVHUtils.NbDigitValuesInMortonCode;
+                // }
+                //
+                // dep = new BVHSortNodesFinalJob()
+                // {
+                //     UnsortedNodes = UnsortedNodes,
+                //     SortedNodes = SortedNodes,
+                // }.Schedule(dep);
             }
             else
             {
@@ -313,15 +295,21 @@ namespace Trove.SpatialQueries
         
             public void Execute()
             {
-                BVH.Clear();
+                BVH.UnsortedNodes.Clear();
+                BVH.SortedNodes.Clear();
+                BVH.LeafNodeDatas.Clear();
+                BVH.NodeLevelStartIndexesAndCounts.Clear();
+                BVH.SceneAABB.Value = AABB.GetEmpty();
             }
         }
     }
 
     internal static class BVHUtils
     {
-        internal const int NbDigitsMortonCode = 10; // The number of digits in the max value of a uint (4294967295)
-        internal const int NbValuesPerMortonCodeDigit = 10; // The number of values a digit can have (0 to 9)
+        internal const int NodesHistogramSlicesCount = 4000;
+        internal const uint ValuesPerNodeHistogramSlice = (uint.MaxValue / NodesHistogramSlicesCount) + 1;
+        internal const int NbDigitsIndexesInMortonCode = 10; // The number of digits in the max value of a uint (4294967295)
+        internal const int NbDigitValuesInMortonCode = 10; // The number of values a digit can have (0 to 9)
         
         internal static int ComputeTotalNodesCountForEntries(int entriesCount)
         {
@@ -398,12 +386,13 @@ namespace Trove.SpatialQueries
         {
             int nodesPerWorker = MathUtilities.DivideIntCeil(UnsortedNodes.Length, WorkerCount);
             int startIndex = index * nodesPerWorker;
+            int endIndex = math.min(UnsortedNodes.Length, startIndex + nodesPerWorker);
             
             // Compute morton codes (from normalized position relative to scene AABB)
             AABB sceneAABB = SceneAABB.Value;
             float3 sceneDimensions = sceneAABB.Max - sceneAABB.Min;
             BVHNode* nodesPtr = UnsortedNodes.GetUnsafePtr();
-            for (int i = startIndex; i < math.min(UnsortedNodes.Length, startIndex + nodesPerWorker); i++)
+            for (int i = startIndex; i < endIndex; i++)
             {
                 ref BVHNode nodeRef = ref UnsafeUtility.ArrayElementAsRef<BVHNode>(nodesPtr, i);
                 float3 normalizedPosition = (nodeRef.AABB.GetCenter() - sceneAABB.Min) / sceneDimensions; // Position from 0f to 1f in the scene
@@ -414,152 +403,156 @@ namespace Trove.SpatialQueries
     }
 
     [BurstCompile]
-    public struct BVHSortNodesInitialJob : IJob
+    internal struct BVHInitializeSortJob : IJob
     {
         public int WorkerCount;
-        [ReadOnly]
         public NativeList<BVHNode> UnsortedNodes;
-        public NativeList<UnsafeList<int>> SortingNodeBuckets;
-        public NativeList<UnsafeList<int>> SortingNodeIndexes;
+        public NativeList<BVHNode> SortedNodes;
+        public NativeList<int> NodesHistogram;
+        public NativeList<WorkerLoadBalancingData> WorkerLoadBalancingData;
 
         public void Execute()
         {
-            UnsafeList<int> srcNodes = SortingNodeIndexes[0];
-            UnsafeList<int> dstNodes = SortingNodeIndexes[1];
-            srcNodes.Resize(UnsortedNodes.Length, NativeArrayOptions.UninitializedMemory);
-            dstNodes.Resize(UnsortedNodes.Length, NativeArrayOptions.UninitializedMemory);
-            for (int i = 0; i < UnsortedNodes.Length; i++)
+            // Ensure sorted nodes length
+            if (SortedNodes.Length != UnsortedNodes.Length)
             {
-                srcNodes[i] = i;
+                SortedNodes.Resize(UnsortedNodes.Length, NativeArrayOptions.UninitializedMemory);
             }
-            SortingNodeIndexes[0] = srcNodes;
-            SortingNodeIndexes[1] = dstNodes;
+
+            // Ensure histogram length
+            if (NodesHistogram.Length != BVHUtils.NodesHistogramSlicesCount * WorkerCount)
+            {
+                NodesHistogram.Resize(BVHUtils.NodesHistogramSlicesCount * WorkerCount, NativeArrayOptions.ClearMemory);
+            }
             
-            // Ensure buckets capacities
-            int requiredBucketsCount = BVHUtils.NbValuesPerMortonCodeDigit * WorkerCount;
-            if (SortingNodeBuckets.Length < requiredBucketsCount)
+            // Clear histogram
+            for (int i = 0; i < NodesHistogram.Length; i++)
             {
-                int lengthDiff = requiredBucketsCount - SortingNodeBuckets.Length;
-                for (int i = 0; i < lengthDiff; i++)
-                {
-                    SortingNodeBuckets.Add(new UnsafeList<int>(256, Allocator.Persistent));
-                }
+                NodesHistogram[i] = 0;
             }
+            
+            // Clear worker slice ranges
+            WorkerLoadBalancingData.Clear();
         }
     }
 
     [BurstCompile]
-    public unsafe struct BVHSortNodesParallelJob : IJobFor
+    internal unsafe struct BVHComputeNodesHistogramJob : IJobFor
     {
         public int WorkerCount;
-        public int DigitIndex;
         [ReadOnly]
         public NativeList<BVHNode> UnsortedNodes;
         [NativeDisableParallelForRestriction]
-        public NativeList<UnsafeList<int>> SortingNodeBuckets;
-        [NativeDisableParallelForRestriction]
-        public NativeList<UnsafeList<int>> SortingNodeIndexes;
+        public NativeList<int> NodesHistogram;
 
         public void Execute(int workerIndex)
         {
-            // Powers of 10
-            Span<uint> powersOfTen = stackalloc uint[]
-            {
-                1,
-                10,
-                100,
-                1000,
-                10000,
-                100000,
-                1000000,
-                10000000,
-                100000000,
-                1000000000
-            };
-            
-            int nodesCountForWorker = MathUtilities.DivideIntCeil(UnsortedNodes.Length, WorkerCount);
-            int nodesStartIndex = workerIndex * nodesCountForWorker;
-            int nodesEndIndex = math.min(UnsortedNodes.Length, nodesStartIndex + nodesCountForWorker);
-            int bucketsStartIndex = workerIndex * BVHUtils.NbValuesPerMortonCodeDigit;
+            int nodesPerWorker = MathUtilities.DivideIntCeil(UnsortedNodes.Length, WorkerCount);
+            int startIndex = workerIndex * nodesPerWorker;
+            int endIndex = math.min(UnsortedNodes.Length, startIndex + nodesPerWorker);
 
-            // Swap dst and src nodes
-            UnsafeList<int> srcNodes;
-            if (DigitIndex % 2 == 0)
-            {
-                srcNodes = SortingNodeIndexes[0];
-            }
-            else
-            {
-                srcNodes = SortingNodeIndexes[1];
-            }
+            int* nodesHistogramPtrForWorker = NodesHistogram.GetUnsafePtr() + (long)(BVHUtils.NodesHistogramSlicesCount * workerIndex);
             
-            // Get the digit at that index for each node, and put it in the corresponding bucket
-            for (int srcNodeIndex = nodesStartIndex; srcNodeIndex < nodesEndIndex; srcNodeIndex++)
+            // For each node in this worker's range, 
+            for (int i = startIndex; i < endIndex; i++)
             {
-                uint mortonCode = UnsortedNodes[srcNodes[srcNodeIndex]].MortonCode;
-                int digitValue = (int)((mortonCode / powersOfTen[DigitIndex]) % 10);
-                
-                UnsafeList<int> bucketForValue = SortingNodeBuckets[bucketsStartIndex + digitValue];
-                bucketForValue.AddWithGrowFactor(srcNodes[srcNodeIndex], 2f);
-                SortingNodeBuckets[bucketsStartIndex + digitValue] = bucketForValue;
+                uint mortonCode = UnsortedNodes[i].MortonCode;
+                int histogramSliceIndex = (int)(mortonCode / BVHUtils.ValuesPerNodeHistogramSlice);
+                ref int histogramValRef = ref UnsafeUtility.ArrayElementAsRef<int>(nodesHistogramPtrForWorker, histogramSliceIndex);
+                histogramValRef++;
             }
         }
     }
 
     [BurstCompile]
-    public unsafe struct BVHSortNodesMergeJob : IJob
+    internal unsafe struct BVHMergeHistogramsAndComputeLoadBalancingJob : IJob
     {
         public int WorkerCount;
-        public int DigitIndex;
-        public NativeList<UnsafeList<int>> SortingNodeBuckets;
-        public NativeList<UnsafeList<int>> SortingNodeIndexes;
+        public NativeList<BVHNode> UnsortedNodes;
+        public NativeList<int> NodesHistogram;
+        public NativeList<WorkerLoadBalancingData> WorkerLoadBalancingData;
 
         public void Execute()
         {
-            UnsafeList<int> dstNodes;
-            if (DigitIndex % 2 == 0)
+            int* nodesHistogramPtr = NodesHistogram.GetUnsafePtr();
+            
+            // Merge all into the first worker's range
+            for (int workerIndex = 1; workerIndex < WorkerCount; workerIndex++)
             {
-                dstNodes = SortingNodeIndexes[1];
-            }
-            else
-            {
-                dstNodes = SortingNodeIndexes[0];
-            }
-                
-            // Update sorted nodes from buckets
-            int* dstPtr = dstNodes.Ptr;
-            for (int bucketValue = 0; bucketValue < BVHUtils.NbValuesPerMortonCodeDigit; bucketValue++)
-            {
-                for (int workerIndex = 0; workerIndex < WorkerCount; workerIndex++)
+                for (int sliceIndex = 0; sliceIndex < BVHUtils.NodesHistogramSlicesCount; sliceIndex++)
                 {
-                    int workerBucketIndex = (workerIndex * BVHUtils.NbValuesPerMortonCodeDigit) + bucketValue;
-                    
-                    UnsafeList<int> bucketList = SortingNodeBuckets[workerBucketIndex];
-                    UnsafeUtility.MemCpy(dstPtr, bucketList.Ptr, UnsafeUtility.SizeOf<int>() * bucketList.Length);
-                    dstPtr = dstPtr + (long)bucketList.Length;
-                    bucketList.Clear();
-                    SortingNodeBuckets[workerBucketIndex] = bucketList;
+                    ref int firstWorkerHistogramValRef = ref UnsafeUtility.ArrayElementAsRef<int>(nodesHistogramPtr, sliceIndex);
+                    firstWorkerHistogramValRef += NodesHistogram[(workerIndex * BVHUtils.NodesHistogramSlicesCount) + sliceIndex];
                 }
             }
+            
+            // Compute load balancing
+            // Assign a slices range to each worker so that each worker has a similar quantity of nodes to process
+            int totalElementsCounter = 0;
+            int desiredElementsPerWorker = MathUtilities.DivideIntCeil(UnsortedNodes.Length, WorkerCount);
+            WorkerLoadBalancingData tmpLoadBalancingData = new WorkerLoadBalancingData();
+            for (int i = 0; i < BVHUtils.NodesHistogramSlicesCount; i++)
+            {
+                tmpLoadBalancingData.SlicesLength++;
+                tmpLoadBalancingData.MaxValue += BVHUtils.ValuesPerNodeHistogramSlice;
+                tmpLoadBalancingData.ElementsCount += NodesHistogram[i];
+                totalElementsCounter += NodesHistogram[i];
+                
+                if (tmpLoadBalancingData.ElementsCount >= desiredElementsPerWorker ||
+                    i >= BVHUtils.NodesHistogramSlicesCount - 1)
+                {
+                    uint addedMaxValue = tmpLoadBalancingData.MaxValue;
+                    WorkerLoadBalancingData.Add(tmpLoadBalancingData);
+                    
+                    tmpLoadBalancingData = new WorkerLoadBalancingData
+                    {
+                        SliceStartIndex = i + 1,
+                        SlicesLength = 0,
+                        ElementsStartIndex = totalElementsCounter,
+                        ElementsCount = 0,
+                        MinValue = addedMaxValue,
+                        MaxValue = addedMaxValue,
+                    };
+                }
+            }
+
+            Assert.IsTrue(WorkerLoadBalancingData.Length <= WorkerCount);
         }
     }
 
     [BurstCompile]
-    public struct BVHSortNodesFinalJob : IJob
+    internal unsafe struct BVHParallelSortJob : IJobFor
     {
+        [ReadOnly]
         public NativeList<BVHNode> UnsortedNodes;
+        [NativeDisableParallelForRestriction]
         public NativeList<BVHNode> SortedNodes;
-        public NativeList<UnsafeList<int>> SortingNodeIndexes;
+        [ReadOnly]
+        public NativeList<WorkerLoadBalancingData> WorkerLoadBalancingData;
 
-        public void Execute()
+        public void Execute(int workerIndex)
         {
-            SortedNodes.Resize(UnsortedNodes.Length, NativeArrayOptions.UninitializedMemory);
-            UnsafeList<int> dstNodes = SortingNodeIndexes[0];
-            
-            // Process final sorted results
-            for (int i = 0; i < dstNodes.Length; i++)
+            if (workerIndex < WorkerLoadBalancingData.Length)
             {
-                SortedNodes[i] = UnsortedNodes[dstNodes[i]];
+                WorkerLoadBalancingData loadBalancingData = WorkerLoadBalancingData[workerIndex];
+
+                // First pass; group nodes by value range contiguously in sorted array
+                int addedCounter = 0;
+                for (int i = 0; i < UnsortedNodes.Length; i++)
+                {
+                    BVHNode node = UnsortedNodes[i];
+                    if (node.MortonCode >= loadBalancingData.MinValue && node.MortonCode < loadBalancingData.MaxValue)
+                    {
+                        SortedNodes[loadBalancingData.ElementsStartIndex + addedCounter] = node;
+                        addedCounter++;
+                    }
+                }
+
+                // Second pass; sort grouped nodes of value range
+                UnsafeList<BVHNode> sortingNodes = new UnsafeList<BVHNode>(
+                    SortedNodes.GetUnsafePtr() + (long)loadBalancingData.ElementsStartIndex,
+                    loadBalancingData.ElementsCount);
+                sortingNodes.Sort();
             }
         }
     }
