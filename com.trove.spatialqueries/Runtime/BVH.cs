@@ -53,6 +53,69 @@ namespace Trove.SpatialQueries
         internal NativeList<UnsafeList<int>> SortingNodeBuckets;
         internal NativeList<UnsafeList<int>> SortingNodeIndexes;
 
+        public unsafe struct ParallelAdder
+        {
+            internal NativeStream NodeStream;
+            internal NativeStream NodeDataStream;
+
+            public Writer GetWriter()
+            {
+                return new Writer
+                {
+                    NodeStreamWriter = NodeStream.AsWriter(),
+                    NodeDataStreamWriter = NodeDataStream.AsWriter(),
+                };
+            }
+
+            internal Reader GetReader()
+            {
+                return new Reader
+                {
+                    NodetreamReader = NodeStream.AsReader(),
+                    NodeDataStreamReader = NodeDataStream.AsReader(),
+                };
+            }
+
+            public void Dispose(JobHandle dep)
+            {
+                NodeStream.Dispose(dep);
+                NodeDataStream.Dispose(dep);
+            }
+
+            public struct Writer
+            {
+                internal NativeStream.Writer NodeStreamWriter;
+                internal NativeStream.Writer NodeDataStreamWriter;
+
+                public void BeginForEachIndex(int index)
+                {
+                    NodeStreamWriter.BeginForEachIndex(index);
+                    NodeDataStreamWriter.BeginForEachIndex(index);
+                }
+
+                public void EndForEachIndex()
+                {
+                    NodeStreamWriter.EndForEachIndex();
+                    NodeDataStreamWriter.EndForEachIndex();
+                }
+                
+                public void Add(in TNodeData nodeData, in AABB aabb)
+                {
+                    NodeStreamWriter.Write(new BVHNode
+                    {
+                        AABB = aabb,
+                    });
+                    NodeDataStreamWriter.Write(nodeData);
+                }
+            }
+
+            public struct Reader
+            {
+                internal NativeStream.Reader NodetreamReader;
+                internal NativeStream.Reader NodeDataStreamReader;
+            }
+        }
+
         public static BVH<TNodeData> Create(Allocator allocator, int initialElementsCapacity)
         {
             BVH<TNodeData> bvh = new BVH<TNodeData>();
@@ -151,6 +214,17 @@ namespace Trove.SpatialQueries
             }
         }
 
+        public ParallelAdder GetParallelAdder(int parallelCount, Allocator allocator)
+        {
+            ParallelAdder adder = new ParallelAdder
+            {
+                NodeStream = new NativeStream(parallelCount, allocator),
+                NodeDataStream = new NativeStream(parallelCount, allocator),
+            };
+
+            return adder;
+        }
+
         public void Add(in TNodeData nodeData, in AABB aabb)
         {
             AABB sceneAABB = SceneAABB.Value;
@@ -160,16 +234,45 @@ namespace Trove.SpatialQueries
             UnsortedNodes.Add(new BVHNode
             {
                 AABB = aabb,
-                DataIndex = LeafNodeDatas.Length,
             });
             LeafNodeDatas.Add(nodeData);
         }
 
-        public JobHandle ScheduleBuildJobs(JobHandle dep)
+        public JobHandle ScheduleClearJob(JobHandle dep)
+        {
+            dep = new BVHClearJob
+            {
+                BVH = this,
+            }.Schedule(dep);
+            
+            return dep;
+        }
+
+        public JobHandle ScheduleAddAndDisposeParallelWriter(in ParallelAdder adder, JobHandle dep)
+        {
+            dep = new BVHAddParallelWriterJob
+            {
+                Adder = adder.GetReader(),
+                UnsortedNodes = UnsortedNodes,
+                LeafNodeDatas = LeafNodeDatas,
+            }.Schedule(dep);
+
+            adder.Dispose(dep);
+
+            return dep;
+        }
+
+        public JobHandle ScheduleBuildJobs(bool useParallelSort, JobHandle dep)
         {
             int workerCount = JobsUtility.JobWorkerCount;
 
-            dep = new BVHBuildMortonCodesJob
+            dep = new BVHComputeSceneAABBJob
+            {
+                SceneAABB = SceneAABB,
+                UnsortedNodes = UnsortedNodes,
+            }.Schedule(dep);
+
+            dep = new BVHComputeMortonCodesAndDataIndexesJob
             {
                 WorkerCount = workerCount,
                 SceneAABB = SceneAABB,
@@ -177,6 +280,7 @@ namespace Trove.SpatialQueries
             }.ScheduleParallel(workerCount, 1, dep);
             
             // Parallel radix sort nodes by morton code
+            if(useParallelSort)
             {
                 dep = new BVHSortNodesInitialJob
                 {
@@ -214,6 +318,14 @@ namespace Trove.SpatialQueries
                     UnsortedNodes = UnsortedNodes,
                     SortedNodes = SortedNodes,
                     SortingNodeIndexes = SortingNodeIndexes,
+                }.Schedule(dep);
+            }
+            else
+            {
+                dep = new BVHSingleSortJob
+                {
+                    UnsortedNodes = UnsortedNodes,
+                    SortedNodes = SortedNodes,
                 }.Schedule(dep);
             }
 
@@ -287,6 +399,41 @@ namespace Trove.SpatialQueries
         {
             // TODO
         }
+    
+        [BurstCompile]
+        public struct BVHClearJob : IJob
+        {
+            public BVH<TNodeData> BVH;
+        
+            public void Execute()
+            {
+                BVH.Clear();
+            }
+        }
+
+        [BurstCompile]
+        public unsafe struct BVHAddParallelWriterJob : IJob
+        {
+            public ParallelAdder.Reader Adder;
+            public NativeList<BVHNode> UnsortedNodes;
+            public NativeList<TNodeData> LeafNodeDatas;
+        
+            public void Execute()
+            {
+                for (int i = 0; i < Adder.NodetreamReader.ForEachCount; i++)
+                {
+                    Adder.NodetreamReader.BeginForEachIndex(i);
+                    void* nodesPtr = Adder.NodetreamReader.ReadUnsafePtr(0);
+                    int nodesLength = Adder.NodetreamReader.RemainingItemCount;
+                    UnsortedNodes.AddRange(nodesPtr, nodesLength);
+                    
+                    Adder.NodeDataStreamReader.BeginForEachIndex(i);
+                    void* nodeDatasPtr = Adder.NodeDataStreamReader.ReadUnsafePtr(0);
+                    int nodeDatasLength = Adder.NodeDataStreamReader.RemainingItemCount;
+                    LeafNodeDatas.AddRange(nodeDatasPtr, nodeDatasLength);
+                }
+            }
+        }
     }
 
     internal static class BVHUtils
@@ -357,7 +504,7 @@ namespace Trove.SpatialQueries
     }
 
     [BurstCompile]
-    public unsafe struct BVHBuildMortonCodesJob : IJobFor
+    public unsafe struct BVHComputeMortonCodesAndDataIndexesJob : IJobFor
     {
         public int WorkerCount;
         [ReadOnly]
@@ -379,7 +526,25 @@ namespace Trove.SpatialQueries
                 ref BVHNode nodeRef = ref UnsafeUtility.ArrayElementAsRef<BVHNode>(nodesPtr, i);
                 float3 normalizedPosition = (nodeRef.AABB.GetCenter() - sceneAABB.Min) / sceneDimensions; // Position from 0f to 1f in the scene
                 nodeRef.MortonCode = BVHUtils.ComputeMortonCode(normalizedPosition);
+                nodeRef.DataIndex = i;
             }
+        }
+    }
+
+    [BurstCompile]
+    public struct BVHComputeSceneAABBJob : IJob
+    {
+        public NativeReference<AABB> SceneAABB;
+        [ReadOnly] public NativeList<BVHNode> UnsortedNodes;
+
+        public void Execute()
+        {
+            AABB sceneAABB = SceneAABB.Value;
+            for (int i = 0; i < UnsortedNodes.Length; i++)
+            {
+                sceneAABB.Include(UnsortedNodes[i].AABB);
+            }
+            SceneAABB.Value = sceneAABB;
         }
     }
 
@@ -531,6 +696,29 @@ namespace Trove.SpatialQueries
             {
                 SortedNodes[i] = UnsortedNodes[dstNodes[i]];
             }
+        }
+    }
+
+    [BurstCompile]
+    public unsafe struct BVHSingleSortJob : IJob
+    {
+        public NativeList<BVHNode> UnsortedNodes;
+        public NativeList<BVHNode> SortedNodes;
+
+        public void Execute()
+        {
+            if (SortedNodes.Length != UnsortedNodes.Length)
+            {
+                SortedNodes.Resize(UnsortedNodes.Length, NativeArrayOptions.ClearMemory);
+            } 
+            
+            // Swap lists
+            NativeList<BVHNode> tmpUnsortedNodes = UnsortedNodes;
+            SortedNodes = UnsortedNodes;
+            UnsortedNodes = tmpUnsortedNodes;
+            
+            // Sort
+            SortedNodes.Sort();
         }
     }
 

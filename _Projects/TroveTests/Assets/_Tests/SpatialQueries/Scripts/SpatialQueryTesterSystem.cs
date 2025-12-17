@@ -11,9 +11,14 @@ using Unity.Transforms;
 using UnityEngine;
 using AABB = Trove.AABB;
 
+[assembly: RegisterGenericJobType(typeof(BVH<TestNodeData>.BVHClearJob))]
+[assembly: RegisterGenericJobType(typeof(BVH<TestNodeData>.BVHAddParallelWriterJob))]
+
 public struct SpatialQueryTester : IComponentData
 {
     public Entity BVHCubePrefab;
+
+    public bool UseParallelSort;
 
     public int SpawnCount;
     public AABB SpawnArea;
@@ -25,14 +30,15 @@ public struct SpatialQueryTester : IComponentData
     public bool IsInitialized;
 }
 
+    
+public struct TestNodeData
+{
+    public Entity Entity;
+}
+
 partial struct SpatialQueryTesterSystem : ISystem
 {
     private DebugDrawGroup _debugDrawGroup;
-    
-    public struct TestNodeData
-    {
-        public Entity Entity;
-    }
     
     private BVH<TestNodeData> _bvh;
     
@@ -84,31 +90,41 @@ partial struct SpatialQueryTesterSystem : ISystem
 
             ecb.Playback(state.EntityManager);
             ecb.Dispose();
+            
+            // ---------------------------------------------------------------
 
-            state.Dependency = new ClearBVHJob
-            {
-                BVH = _bvh,
-            }.Schedule(state.Dependency);
+            EntityQuery testElementsQuery = SystemAPI.QueryBuilder().WithAll<LocalTransform, BVHTestObject>().Build();
 
+            state.Dependency = _bvh.ScheduleClearJob(state.Dependency);
+
+            var parallelWriter =
+                _bvh.GetParallelAdder(testElementsQuery.CalculateChunkCount(), state.WorldUpdateAllocator);
+            
             state.Dependency = new AddToBVHJob
             {
-                BVH = _bvh,
-            }.Schedule(state.Dependency);
+                BvhParallelAdder = parallelWriter.GetWriter(),
+            }.ScheduleParallel(state.Dependency);
             
-            state.Dependency = _bvh.ScheduleBuildJobs(state.Dependency);
+            state.Dependency = _bvh.ScheduleAddAndDisposeParallelWriter(in parallelWriter, state.Dependency);
+            
+            state.Dependency = _bvh.ScheduleBuildJobs(tester.UseParallelSort, state.Dependency);
 
-            state.Dependency = new QueryBVHRecursiveJob()
-            {
-                QueryScale = tester.QueryScale,
-                BVH = _bvh,
-            }.ScheduleParallel(state.Dependency);
+            // ---------------------------------------------------------------
+            
+            // state.Dependency = new QueryBVHRecursiveJob()
+            // {
+            //     QueryScale = tester.QueryScale,
+            //     BVH = _bvh,
+            // }.ScheduleParallel(state.Dependency);
+            //
+            // state.Dependency = new QueryBVHStackJob()
+            // {
+            //     QueryScale = tester.QueryScale,
+            //     BVH = _bvh,
+            // }.ScheduleParallel(state.Dependency);
 
-            state.Dependency = new QueryBVHStackJob()
-            {
-                QueryScale = tester.QueryScale,
-                BVH = _bvh,
-            }.ScheduleParallel(state.Dependency);
-
+            // ---------------------------------------------------------------
+            
             // Debug
             if (SystemAPI.HasSingleton<BVHDebugger>())
             {
@@ -199,27 +215,29 @@ partial struct SpatialQueryTesterSystem : ISystem
             }
         }
     }
-    
-    [BurstCompile]
-    public struct ClearBVHJob : IJob
-    {
-        public BVH<TestNodeData> BVH;
-        
-        public void Execute()
-        {
-            BVH.Clear();
-        }
-    }
 
     [BurstCompile]
-    public partial struct AddToBVHJob : IJobEntity
+    public partial struct AddToBVHJob : IJobEntity, IJobEntityChunkBeginEnd
     {
-        public BVH<TestNodeData> BVH;
+        public BVH<TestNodeData>.ParallelAdder.Writer BvhParallelAdder;
         
         public void Execute(Entity entity, in LocalTransform transform, in BVHTestObject test)
         {
             AABB aabb = AABB.FromCenterExtents(transform.Position, test.AABBExtents * transform.Scale);
-            BVH.Add(new TestNodeData { Entity = entity }, aabb);
+            BvhParallelAdder.Add(new TestNodeData { Entity = entity }, aabb);
+        }
+
+        public bool OnChunkBegin(in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
+        {
+            BvhParallelAdder.BeginForEachIndex(unfilteredChunkIndex);
+            
+            return true;
+        }
+
+        public void OnChunkEnd(in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask,
+            bool chunkWasExecuted)
+        {
+            BvhParallelAdder.EndForEachIndex();
         }
     }
 

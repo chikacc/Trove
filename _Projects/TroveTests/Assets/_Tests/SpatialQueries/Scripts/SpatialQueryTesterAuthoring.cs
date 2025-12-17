@@ -8,6 +8,8 @@ class SpatialQueryTesterAuthoring : MonoBehaviour
 {
     public GameObject BVHCubePrefab;
 
+    public bool UseParallelSort;
+    
     public int SpawnCount = 100;
     public float SpawnScale = 1f;
     public float3 SpawnAreaCenter = float3.zero;
@@ -25,6 +27,8 @@ class SpatialQueryTesterAuthoringBaker : Baker<SpatialQueryTesterAuthoring>
         AddComponent(entity, new SpatialQueryTester
         {
             BVHCubePrefab = GetEntity(authoring.BVHCubePrefab, TransformUsageFlags.None),
+            
+            UseParallelSort = authoring.UseParallelSort,
             
             QuerierRatio = authoring.QuerierRatio,
             QueryScale = authoring.QueryScale,
