@@ -98,16 +98,16 @@ partial struct SpatialQueryTesterSystem : ISystem
             {
                 Bvh = _bvh,
             }.Schedule(state.Dependency);
-            
+
             state.Dependency = _bvh.ScheduleBuildJobs(tester.UseParallelSort, state.Dependency);
 
             // ---------------------------------------------------------------
             
-            state.Dependency = new QueryBVHJob()
-            {
-                QueryScale = tester.QueryScale,
-                BVH = _bvh,
-            }.ScheduleParallel(state.Dependency);
+            // state.Dependency = new QueryBVHJob()
+            // {
+            //     QueryScale = tester.QueryScale,
+            //     BVH = _bvh,
+            // }.ScheduleParallel(state.Dependency);
 
             // ---------------------------------------------------------------
             
@@ -196,7 +196,7 @@ partial struct SpatialQueryTesterSystem : ISystem
             }
         }
     }
-
+    
     [BurstCompile]
     public partial struct AddToBVHJob : IJobEntity
     {

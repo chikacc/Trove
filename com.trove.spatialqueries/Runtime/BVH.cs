@@ -55,7 +55,7 @@ namespace Trove.SpatialQueries
         internal NativeReference<AABB> SceneAABB;
         internal NativeList<int> NodesHistogram;
         internal NativeList<WorkerLoadBalancingData> WorkerLoadBalancingDatas;
-
+        
         /// <summary>
         /// The Querier relies on tmp allocations, so must be used right after creation (it can't be passed between
         /// main thread and jobs, but it CAN be created and used within a job)
@@ -110,17 +110,17 @@ namespace Trove.SpatialQueries
                 results = Results;
             }
 
-            public void QueryRay(in AABB aabb, out UnsafeList<TNodeData> results)
-            {
-                Results.Clear();
-                
-                // Add root node to stack
-                WorkStack.Clear();
-                WorkStack.Add(SortedNodes.Length - 1);
-                
-                // TODO
-                results = Results;
-            }
+            // TODO
+            // public void QueryRay(in AABB aabb, out UnsafeList<TNodeData> results)
+            // {
+            //     Results.Clear();
+            //     
+            //     // Add root node to stack
+            //     WorkStack.Clear();
+            //     WorkStack.Add(SortedNodes.Length - 1);
+            //     
+            //     results = Results;
+            // }
         }
 
         public static BVH<TNodeData> Create(Allocator allocator, int initialElementsCapacity)
@@ -177,11 +177,10 @@ namespace Trove.SpatialQueries
             }
         }
 
-        public void Add(in TNodeData nodeData, in AABB aabb)
+        public unsafe void Add(in TNodeData nodeData, in AABB aabb)
         {
-            AABB sceneAABB = SceneAABB.Value;
-            sceneAABB.Include(aabb);
-            SceneAABB.Value = sceneAABB; 
+            ref AABB sceneAABBRef = ref *SceneAABB.GetUnsafePtr();
+            sceneAABBRef.Include(aabb);
             
             UnsortedNodes.Add(new BVHNode
             {
