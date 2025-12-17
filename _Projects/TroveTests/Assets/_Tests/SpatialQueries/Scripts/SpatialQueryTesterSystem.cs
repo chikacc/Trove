@@ -111,11 +111,11 @@ partial struct SpatialQueryTesterSystem : ISystem
             //     BVH = _bvh,
             // }.ScheduleParallel(state.Dependency);
             //
-            // state.Dependency = new QueryBVHStackJob()
-            // {
-            //     QueryScale = tester.QueryScale,
-            //     BVH = _bvh,
-            // }.ScheduleParallel(state.Dependency);
+            state.Dependency = new QueryBVHStackJob()
+            {
+                QueryScale = tester.QueryScale,
+                BVH = _bvh,
+            }.ScheduleParallel(state.Dependency);
 
             // ---------------------------------------------------------------
             
