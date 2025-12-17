@@ -198,6 +198,12 @@ namespace Trove
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static int DivideIntCeil(int a, int b)
+        {
+            return (a / b) + math.select(0, 1, a % b > 0);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static bool IsRoughlyEqual(this float a, float b, float error = 0.001f)
         {
             return math.distance(a, b) <= error;

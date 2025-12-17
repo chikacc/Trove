@@ -182,7 +182,7 @@ namespace Trove.SpatialQueries
             {
                 WorkerCount = workerCount,
                 SceneAABB = SceneAABB,
-                Nodes = UnsortedNodes,
+                UnsortedNodes = UnsortedNodes,
             }.ScheduleParallel(workerCount, 1, dep);
             
             // Parallel radix sort nodes by morton code
@@ -392,18 +392,18 @@ namespace Trove.SpatialQueries
         [ReadOnly]
         public NativeReference<AABB> SceneAABB;
         [NativeDisableParallelForRestriction]
-        public NativeList<BVHNode> Nodes;
+        public NativeList<BVHNode> UnsortedNodes;
         
         public void Execute(int index)
         {
-            int nodesPerWorker = (int)math.ceil((float)Nodes.Length / (float)WorkerCount);
+            int nodesPerWorker = MathUtilities.DivideIntCeil(UnsortedNodes.Length, WorkerCount);
             int startIndex = index * nodesPerWorker;
             
             // Compute morton codes (from normalized position relative to scene AABB)
             AABB sceneAABB = SceneAABB.Value;
             float3 sceneDimensions = sceneAABB.Max - sceneAABB.Min;
-            BVHNode* nodesPtr = Nodes.GetUnsafePtr();
-            for (int i = startIndex; i < math.min(Nodes.Length, startIndex + nodesPerWorker); i++)
+            BVHNode* nodesPtr = UnsortedNodes.GetUnsafePtr();
+            for (int i = startIndex; i < math.min(UnsortedNodes.Length, startIndex + nodesPerWorker); i++)
             {
                 ref BVHNode nodeRef = ref UnsafeUtility.ArrayElementAsRef<BVHNode>(nodesPtr, i);
                 float3 normalizedPosition = (nodeRef.AABB.GetCenter() - sceneAABB.Min) / sceneDimensions; // Position from 0f to 1f in the scene
@@ -477,7 +477,7 @@ namespace Trove.SpatialQueries
                 1000000000
             };
             
-            int nodesCountForWorker = (int)math.ceil((float)UnsortedNodes.Length / (float)WorkerCount);
+            int nodesCountForWorker = MathUtilities.DivideIntCeil(UnsortedNodes.Length, WorkerCount);
             int nodesStartIndex = workerIndex * nodesCountForWorker;
             int nodesEndIndex = math.min(UnsortedNodes.Length, nodesStartIndex + nodesCountForWorker);
             int bucketsStartIndex = workerIndex * BVHUtils.NbValuesPerMortonCodeDigit;
