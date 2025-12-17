@@ -176,8 +176,27 @@ namespace Trove.SpatialQueries
                 WorkerLoadBalancingDatas.Dispose(jobHandle);
             }
         }
+ 
+        public unsafe void AddNode(in TNodeData nodeData, in AABB aabb)
+        {
+            ref AABB sceneAABBRef = ref *SceneAABB.GetUnsafePtr();
+            sceneAABBRef.Include(aabb);
+            
+            UnsortedNodes.Add(new BVHNode
+            {
+                AABB = aabb,
+            });
+            LeafNodeDatas.Add(nodeData);
+        }
 
-        public unsafe void Add(in TNodeData nodeData, in AABB aabb)
+        public void ReserveAddNodesUnsafe(int nodesCount, out int startIndexOfReservedRange)
+        {
+            startIndexOfReservedRange = UnsortedNodes.Length;
+            UnsortedNodes.Resize(UnsortedNodes.Length + nodesCount, NativeArrayOptions.UninitializedMemory);
+            LeafNodeDatas.Resize(LeafNodeDatas.Length + nodesCount, NativeArrayOptions.UninitializedMemory);
+        }
+
+        public unsafe void AddNodeUnsafe(in TNodeData nodeData, in AABB aabb, int atIndex)
         {
             ref AABB sceneAABBRef = ref *SceneAABB.GetUnsafePtr();
             sceneAABBRef.Include(aabb);

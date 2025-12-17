@@ -201,11 +201,11 @@ partial struct SpatialQueryTesterSystem : ISystem
     public partial struct AddToBVHJob : IJobEntity
     {
         public BVH<TestNodeData> Bvh;
-        
+         
         public void Execute(Entity entity, in LocalTransform transform, in BVHTestObject test)
         {
             AABB aabb = AABB.FromCenterExtents(transform.Position, test.AABBExtents * transform.Scale);
-            Bvh.Add(new TestNodeData { Entity = entity }, aabb);
+            Bvh.AddNode(new TestNodeData { Entity = entity }, aabb);
         }
     }
 
