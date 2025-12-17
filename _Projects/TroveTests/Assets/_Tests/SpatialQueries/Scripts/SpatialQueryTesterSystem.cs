@@ -13,22 +13,6 @@ using AABB = Trove.AABB;
 
 [assembly: RegisterGenericJobType(typeof(BVH<TestNodeData>.BVHClearJob))]
 
-public struct SpatialQueryTester : IComponentData
-{
-    public Entity BVHCubePrefab;
-
-    public bool UseParallelSort;
-
-    public int SpawnCount;
-    public AABB SpawnArea;
-    public float SpawnScale;
-    
-    public float QuerierRatio;
-    public float QueryScale;
-
-    public bool IsInitialized;
-}
-
     
 public struct TestNodeData
 {
@@ -94,20 +78,45 @@ partial struct SpatialQueryTesterSystem : ISystem
 
             state.Dependency = _bvh.ScheduleClearJob(state.Dependency);
 
-            state.Dependency = new AddToBVHJob
+            if (tester.UseParallelAdd)
             {
-                Bvh = _bvh,
-            }.Schedule(state.Dependency);
+                EntityQuery addEntitiesQuery = SystemAPI.QueryBuilder().WithAll<LocalTransform, BVHTestObject>().Build();
+                NativeReference<int> addIndex = new NativeReference<int>(Allocator.Domain);
+                
+                state.Dependency = new ReserveBVHForAddJob
+                {
+                    ReserveCount = addEntitiesQuery.CalculateEntityCount(),
+                    AddStartIndex = addIndex,
+                    Bvh = _bvh,
+                }.Schedule(state.Dependency);
+                
+                state.Dependency = new AddToBVHParallelJob()
+                {
+                    AddStartIndex = addIndex,
+                    Bvh = _bvh,
+                }.ScheduleParallel(state.Dependency);
+
+                state.Dependency = _bvh.SchedulePostAddNodeUnsafeJobs(state.Dependency);
+                
+                addIndex.Dispose(state.Dependency);
+            }
+            else
+            {
+                state.Dependency = new AddToBVHJob
+                {
+                    Bvh = _bvh,
+                }.Schedule(state.Dependency);
+            }
 
             state.Dependency = _bvh.ScheduleBuildJobs(tester.UseParallelSort, state.Dependency);
 
             // ---------------------------------------------------------------
             
-            // state.Dependency = new QueryBVHJob()
-            // {
-            //     QueryScale = tester.QueryScale,
-            //     BVH = _bvh,
-            // }.ScheduleParallel(state.Dependency);
+            state.Dependency = new QueryBVHJob()
+            {
+                QueryScale = tester.QueryScale,
+                BVH = _bvh,
+            }.ScheduleParallel(state.Dependency);
 
             // ---------------------------------------------------------------
             
@@ -206,6 +215,35 @@ partial struct SpatialQueryTesterSystem : ISystem
         {
             AABB aabb = AABB.FromCenterExtents(transform.Position, test.AABBExtents * transform.Scale);
             Bvh.AddNode(new TestNodeData { Entity = entity }, aabb);
+        }
+    }
+    
+    [BurstCompile]
+    public struct ReserveBVHForAddJob : IJob
+    {
+        public int ReserveCount;
+        public NativeReference<int> AddStartIndex;
+        public BVH<TestNodeData> Bvh;
+         
+        public void Execute()
+        {
+            Bvh.ReserveAddNodesUnsafe(ReserveCount, out int startIndexOfReservedRange);
+            AddStartIndex.Value = startIndexOfReservedRange;
+        }
+    }
+    
+    [BurstCompile]
+    public partial struct AddToBVHParallelJob : IJobEntity
+    {
+        [ReadOnly]
+        public NativeReference<int> AddStartIndex;
+        [NativeDisableParallelForRestriction]
+        public BVH<TestNodeData> Bvh;
+         
+        public void Execute(Entity entity, [EntityIndexInQuery] int indexInQuery, in LocalTransform transform, in BVHTestObject test)
+        {
+            AABB aabb = AABB.FromCenterExtents(transform.Position, test.AABBExtents * transform.Scale);
+            Bvh.AddNodeUnsafe(new TestNodeData { Entity = entity }, aabb, AddStartIndex.Value + indexInQuery);
         }
     }
 

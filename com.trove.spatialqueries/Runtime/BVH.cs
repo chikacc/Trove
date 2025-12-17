@@ -177,6 +177,7 @@ namespace Trove.SpatialQueries
             }
         }
  
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe void AddNode(in TNodeData nodeData, in AABB aabb)
         {
             ref AABB sceneAABBRef = ref *SceneAABB.GetUnsafePtr();
@@ -189,23 +190,21 @@ namespace Trove.SpatialQueries
             LeafNodeDatas.Add(nodeData);
         }
 
-        public void ReserveAddNodesUnsafe(int nodesCount, out int startIndexOfReservedRange)
+        public void ReserveAddNodesUnsafe(int addNodesCount, out int startIndexOfReservedRange)
         {
             startIndexOfReservedRange = UnsortedNodes.Length;
-            UnsortedNodes.Resize(UnsortedNodes.Length + nodesCount, NativeArrayOptions.UninitializedMemory);
-            LeafNodeDatas.Resize(LeafNodeDatas.Length + nodesCount, NativeArrayOptions.UninitializedMemory);
+            UnsortedNodes.Resize(UnsortedNodes.Length + addNodesCount, NativeArrayOptions.UninitializedMemory);
+            LeafNodeDatas.Resize(LeafNodeDatas.Length + addNodesCount, NativeArrayOptions.UninitializedMemory);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe void AddNodeUnsafe(in TNodeData nodeData, in AABB aabb, int atIndex)
         {
-            ref AABB sceneAABBRef = ref *SceneAABB.GetUnsafePtr();
-            sceneAABBRef.Include(aabb);
-            
-            UnsortedNodes.Add(new BVHNode
+            UnsortedNodes[atIndex] = new BVHNode
             {
                 AABB = aabb,
-            });
-            LeafNodeDatas.Add(nodeData);
+            };
+            LeafNodeDatas[atIndex] = nodeData;
         }
 
         public JobHandle ScheduleClearJob(JobHandle dep)
@@ -214,6 +213,33 @@ namespace Trove.SpatialQueries
             {
                 BVH = this,
             }.Schedule(dep);
+            
+            return dep;
+        }
+
+        public JobHandle SchedulePostAddNodeUnsafeJobs(JobHandle dep)
+        {
+            int workerCount = JobsUtility.JobWorkerCount;
+            NativeArray<AABB> aabbForWorker = new NativeArray<AABB>(workerCount, Allocator.Domain);
+            for (int i = 0; i < workerCount; i++)
+            {
+                aabbForWorker[i] = AABB.GetEmpty();
+            }
+
+            dep = new RecomputeSceneAABBsParallelJob
+            {
+                WorkerCount = workerCount,
+                UnsortedNodes = UnsortedNodes,
+                AABBForWorker = aabbForWorker,
+            }.ScheduleParallel(workerCount, 1, dep);
+            
+            dep = new RecomputeSceneAABBsMergeJob()
+            {
+                SceneAABB = SceneAABB,
+                AABBForWorker = aabbForWorker,
+            }.Schedule(dep);
+            
+            aabbForWorker.Dispose(dep);
             
             return dep;
         }
@@ -372,6 +398,47 @@ namespace Trove.SpatialQueries
             val = (val * 0x00000011u) & 0xC30C30C3u;
             val = (val * 0x00000005u) & 0x49249249u;
             return val;
+        }
+    }
+
+    [BurstCompile]
+    public unsafe struct RecomputeSceneAABBsParallelJob : IJobFor
+    {
+        public int WorkerCount;
+        [ReadOnly]
+        public NativeList<BVHNode> UnsortedNodes;
+        [NativeDisableParallelForRestriction]
+        public NativeArray<AABB> AABBForWorker;
+        
+        public void Execute(int workerIndex)
+        {
+            int nodesPerWorker = MathUtilities.DivideIntCeil(UnsortedNodes.Length, WorkerCount);
+            int startIndex = workerIndex * nodesPerWorker;
+            int endIndex = math.min(UnsortedNodes.Length, startIndex + nodesPerWorker);
+
+            ref AABB aabbForWorker = ref UnsafeUtility.ArrayElementAsRef<AABB>(AABBForWorker.GetUnsafePtr(), workerIndex);
+            
+            for (int i = startIndex; i < endIndex; i++)
+            {
+                aabbForWorker.Include(UnsortedNodes[i].AABB);
+            }
+        }
+    }
+
+    [BurstCompile]
+    public unsafe struct RecomputeSceneAABBsMergeJob : IJob
+    {
+        public NativeReference<AABB> SceneAABB;
+        public NativeArray<AABB> AABBForWorker;
+        
+        public void Execute()
+        {
+            ref AABB sceneAABBRef = ref *SceneAABB.GetUnsafePtr();
+            
+            for (int i = 0; i < AABBForWorker.Length; i++)
+            {
+                sceneAABBRef.Include(AABBForWorker[i]);
+            }
         }
     }
 

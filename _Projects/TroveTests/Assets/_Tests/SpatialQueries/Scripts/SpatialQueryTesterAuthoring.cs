@@ -4,10 +4,28 @@ using Trove.SpatialQueries;
 using Unity.Mathematics;
 using AABB = Trove.AABB;
 
+public struct SpatialQueryTester : IComponentData
+{
+    public Entity BVHCubePrefab;
+
+    public bool UseParallelAdd;
+    public bool UseParallelSort;
+
+    public int SpawnCount;
+    public AABB SpawnArea;
+    public float SpawnScale;
+    
+    public float QuerierRatio;
+    public float QueryScale;
+
+    public bool IsInitialized;
+}
+
 class SpatialQueryTesterAuthoring : MonoBehaviour
 {
     public GameObject BVHCubePrefab;
 
+    public bool UseParallelAdd;
     public bool UseParallelSort;
     
     public int SpawnCount = 100;
@@ -28,6 +46,7 @@ class SpatialQueryTesterAuthoringBaker : Baker<SpatialQueryTesterAuthoring>
         {
             BVHCubePrefab = GetEntity(authoring.BVHCubePrefab, TransformUsageFlags.None),
             
+            UseParallelAdd = authoring.UseParallelAdd,
             UseParallelSort = authoring.UseParallelSort,
             
             QuerierRatio = authoring.QuerierRatio,
