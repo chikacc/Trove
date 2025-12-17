@@ -242,11 +242,11 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   QueryEnabled: 0
   QueryExtents:
-    x: 0
-    y: 0
-    z: 0
+    x: 100
+    y: 75
+    z: 50
   DebugMortonCurve: 0
-  MortonCurveDebugIterations: 2147483647
+  MortonCurveDebugIterations: 1000
   DebugBoundingBoxes: 0
   BoundingBoxDebugLevel: 0
 --- !u!4 &703528501

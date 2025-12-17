@@ -150,6 +150,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   BVHCubePrefab: {fileID: 8139080054391949969, guid: 5377fdba6c360a044b6a811782b56b71,
     type: 3}
+  UseParallelAdd: 0
   UseParallelSort: 1
   SpawnCount: 100000
   SpawnScale: 4

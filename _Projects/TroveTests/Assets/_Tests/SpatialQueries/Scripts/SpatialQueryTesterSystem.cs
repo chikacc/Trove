@@ -12,7 +12,6 @@ using UnityEngine;
 using AABB = Trove.AABB;
 
 [assembly: RegisterGenericJobType(typeof(BVH<TestNodeData>.BVHClearJob))]
-[assembly: RegisterGenericJobType(typeof(BVH<TestNodeData>.BVHAddParallelWriterJob))]
 
 public struct SpatialQueryTester : IComponentData
 {
@@ -97,15 +96,10 @@ partial struct SpatialQueryTesterSystem : ISystem
 
             state.Dependency = _bvh.ScheduleClearJob(state.Dependency);
 
-            var parallelWriter =
-                _bvh.GetParallelAdder(testElementsQuery.CalculateChunkCount(), state.WorldUpdateAllocator);
-            
             state.Dependency = new AddToBVHJob
             {
-                BvhParallelAdder = parallelWriter.GetWriter(),
-            }.ScheduleParallel(state.Dependency);
-            
-            state.Dependency = _bvh.ScheduleAddAndDisposeParallelWriter(in parallelWriter, state.Dependency);
+                Bvh = _bvh,
+            }.Schedule(state.Dependency);
             
             state.Dependency = _bvh.ScheduleBuildJobs(tester.UseParallelSort, state.Dependency);
 
@@ -217,30 +211,17 @@ partial struct SpatialQueryTesterSystem : ISystem
     }
 
     [BurstCompile]
-    public partial struct AddToBVHJob : IJobEntity, IJobEntityChunkBeginEnd
+    public partial struct AddToBVHJob : IJobEntity
     {
-        public BVH<TestNodeData>.ParallelAdder.Writer BvhParallelAdder;
+        public BVH<TestNodeData> Bvh;
         
         public void Execute(Entity entity, in LocalTransform transform, in BVHTestObject test)
         {
             AABB aabb = AABB.FromCenterExtents(transform.Position, test.AABBExtents * transform.Scale);
-            BvhParallelAdder.Add(new TestNodeData { Entity = entity }, aabb);
-        }
-
-        public bool OnChunkBegin(in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
-        {
-            BvhParallelAdder.BeginForEachIndex(unfilteredChunkIndex);
-            
-            return true;
-        }
-
-        public void OnChunkEnd(in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask,
-            bool chunkWasExecuted)
-        {
-            BvhParallelAdder.EndForEachIndex();
+            Bvh.Add(new TestNodeData { Entity = entity }, aabb);
         }
     }
-
+    
     [BurstCompile]
     public partial struct QueryBVHRecursiveJob : IJobEntity, IJobEntityChunkBeginEnd
     {
