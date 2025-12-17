@@ -40,8 +40,6 @@ namespace Trove.SpatialQueries
 
     internal struct WorkerLoadBalancingData
     {
-        public int SliceStartIndex;
-        public int SlicesLength;
         public int ElementsStartIndex;
         public int ElementsCount;
         public uint MinValue;
@@ -493,7 +491,6 @@ namespace Trove.SpatialQueries
             WorkerLoadBalancingData tmpLoadBalancingData = new WorkerLoadBalancingData();
             for (int i = 0; i < BVHUtils.NodesHistogramSlicesCount; i++)
             {
-                tmpLoadBalancingData.SlicesLength++;
                 tmpLoadBalancingData.MaxValue += BVHUtils.ValuesPerNodeHistogramSlice;
                 tmpLoadBalancingData.ElementsCount += NodesHistogram[i];
                 totalElementsCounter += NodesHistogram[i];
@@ -506,8 +503,6 @@ namespace Trove.SpatialQueries
                     
                     tmpLoadBalancingData = new WorkerLoadBalancingData
                     {
-                        SliceStartIndex = i + 1,
-                        SlicesLength = 0,
                         ElementsStartIndex = totalElementsCounter,
                         ElementsCount = 0,
                         MinValue = addedMaxValue,
@@ -577,6 +572,20 @@ namespace Trove.SpatialQueries
             
             // Sort
             SortedNodes.Sort();
+        }
+    }
+
+    [BurstCompile]
+    public struct BVHPrecomputeHierarchyJob : IJob
+    {
+        public NativeList<BVHNode> SortedNodes;
+
+        // TODO: mostly for debug. Keep it?
+        public NativeList<StartIndexAndCount> NodeLevelStartIndexesAndCounts;
+
+        public void Execute()
+        {
+            // 
         }
     }
 
