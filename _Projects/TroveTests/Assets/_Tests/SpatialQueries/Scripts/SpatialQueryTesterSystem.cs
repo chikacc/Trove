@@ -103,17 +103,11 @@ partial struct SpatialQueryTesterSystem : ISystem
 
             // ---------------------------------------------------------------
             
-            // state.Dependency = new QueryBVHRecursiveJob()
-            // {
-            //     QueryScale = tester.QueryScale,
-            //     BVH = _bvh,
-            // }.ScheduleParallel(state.Dependency);
-            //
-            // state.Dependency = new QueryBVHStackJob()
-            // {
-            //     QueryScale = tester.QueryScale,
-            //     BVH = _bvh,
-            // }.ScheduleParallel(state.Dependency);
+            state.Dependency = new QueryBVHJob()
+            {
+                QueryScale = tester.QueryScale,
+                BVH = _bvh,
+            }.ScheduleParallel(state.Dependency);
 
             // ---------------------------------------------------------------
             
@@ -169,15 +163,13 @@ partial struct SpatialQueryTesterSystem : ISystem
                 {
                     ComponentLookup<LocalTransform> localTransformLookup = state.GetComponentLookup<LocalTransform>(true);
                     ComponentLookup<BVHTestObject> bvhTestObjectLookup = state.GetComponentLookup<BVHTestObject>(true);
-                    
-                    UnsafeList<TestNodeData> results = new UnsafeList<TestNodeData>(2000, Allocator.Temp);
-                    UnsafeList<int> workStack = new UnsafeList<int>(5000, Allocator.Temp);
 
-                    results.Clear();
+                    BVH<TestNodeData>.Querier querier = _bvh.CreateQuerier();
+                    
                     AABB aabb = AABB.FromCenterExtents(debugger.QueryPosition,
                         debugger.QueryExtents);
 
-                    _bvh.QueryAABBStack(aabb, ref workStack, ref results);
+                    querier.QueryAABB(aabb, out UnsafeList<TestNodeData> results);
                     
                     // Draw query bounds
                     _debugDrawGroup.DrawWireBox(
@@ -200,9 +192,6 @@ partial struct SpatialQueryTesterSystem : ISystem
                                 UnityEngine.Color.red);
                         }
                     }
-
-                    results.Dispose();
-                    workStack.Dispose();
                 }
             }
         }
@@ -219,71 +208,28 @@ partial struct SpatialQueryTesterSystem : ISystem
             Bvh.Add(new TestNodeData { Entity = entity }, aabb);
         }
     }
-    
+
     [BurstCompile]
-    public partial struct QueryBVHRecursiveJob : IJobEntity, IJobEntityChunkBeginEnd
+    public partial struct QueryBVHJob : IJobEntity, IJobEntityChunkBeginEnd
     {
         public float QueryScale;
         [ReadOnly]
         public BVH<TestNodeData> BVH;
         
-        private UnsafeList<TestNodeData> results;
-        
-        public void Execute(Entity entity, in LocalTransform transform, ref BVHTestObject test)
-        {
-            results.Clear();
-            AABB aabb = AABB.FromCenterExtents(transform.Position, test.AABBExtents * transform.Scale * QueryScale);
-            
-            BVH.QueryAABBRecursive(aabb, ref results);
-            
-            test.QueryResultsRecursive = results.Length;
-        }
-
-        public bool OnChunkBegin(in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
-        {
-            if (!results.IsCreated)
-            {
-                results = new UnsafeList<TestNodeData>(2000, Allocator.Temp);
-            }
-            
-            return true;
-        }
-
-        public void OnChunkEnd(in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask,
-            bool chunkWasExecuted)
-        {
-        }
-    }
-
-    [BurstCompile]
-    public partial struct QueryBVHStackJob : IJobEntity, IJobEntityChunkBeginEnd
-    {
-        public float QueryScale;
-        [ReadOnly]
-        public BVH<TestNodeData> BVH;
-        
-        private UnsafeList<TestNodeData> results;
-        private UnsafeList<int> workStack;
+        private BVH<TestNodeData>.Querier _querier;
         
         public void Execute(in LocalTransform transform, ref BVHTestObject test)
         {
-            results.Clear();
             AABB aabb = AABB.FromCenterExtents(transform.Position, test.AABBExtents * transform.Scale * QueryScale);
-            
-            BVH.QueryAABBStack(aabb, ref workStack, ref results);
-            
+            _querier.QueryAABB(aabb, out UnsafeList<TestNodeData> results);
             test.QueryResultsStack = results.Length;
         }
 
         public bool OnChunkBegin(in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
         {
-            if (!results.IsCreated)
+            if (!_querier.IsCreated)
             {
-                results = new UnsafeList<TestNodeData>(2000, Allocator.Temp);
-            }
-            if (!workStack.IsCreated)
-            {
-                workStack = new UnsafeList<int>(5000, Allocator.Temp);
+                _querier = BVH.CreateQuerier();
             }
             
             return true;
