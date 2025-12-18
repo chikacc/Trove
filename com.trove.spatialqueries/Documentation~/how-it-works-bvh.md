@@ -41,19 +41,22 @@ public partial struct QueryBVHJob : IJobEntity, IJobEntityChunkBeginEnd
 {
     public float QueryScale;
     [ReadOnly]
-    public BVH<TestNodeData> BVH;
+    public BVH<MyBVHNodeData> BVH;
     
-    private BVH<TestNodeData>.Querier _querier;
+    // We cache a private Querier here, reusable throughout entity iteration
+    private BVH<MyBVHNodeData>.Querier _querier;
     
-    public void Execute(in LocalTransform transform, ref BVHTestObject test)
+    public void Execute(in LocalTransform transform, ref MyQuerier querier)
     {
-        AABB aabb = AABB.FromCenterExtents(transform.Position, test.AABBExtents * transform.Scale * QueryScale);
-        _querier.QueryAABB(aabb, out UnsafeList<TestNodeData> results);
-        test.QueryResultsStack = results.Length;
+        _querier.QueryAABB(AABB.FromCenterExtents(transform.position, new float3(querier.Range)), out UnsafeList<MyBVHNodeData> results);
+
+        // Do what we want with the query results
+        Debug.Log($"Query results count: {results.Length}");
     }
 
     public bool OnChunkBegin(in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
     {
+        // We create the querier only once per thread, and check for creation only once per chunk
         if (!_querier.IsCreated)
         {
             _querier = BVH.CreateQuerier();
