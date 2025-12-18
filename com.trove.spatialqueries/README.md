@@ -13,7 +13,7 @@ Refer to [Trove Readme](https://github.com/PhilSA/Trove/blob/main/README.md#inst
 Trove Spatial Queries contains acceleration structures for querying objects in the scene efficiently.
 
 The currently supported structures are:
-* BVH (Bounding Volumes Hierarchy): useful for querying object (represented by an AABB) within an AABB
+* BVH (Bounding Volumes Hierarchy): useful for querying objects (represented by an AABB) within an AABB
 
 
 ## Table of Contents
