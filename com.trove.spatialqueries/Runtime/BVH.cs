@@ -666,10 +666,8 @@ namespace Trove.SpatialQueries
                 SortedNodes.Resize(UnsortedNodes.Length, NativeArrayOptions.ClearMemory);
             } 
             
-            // Swap lists
-            NativeList<BVHNode> tmpUnsortedNodes = UnsortedNodes;
-            SortedNodes = UnsortedNodes;
-            UnsortedNodes = tmpUnsortedNodes;
+            // TODO: bad
+            SortedNodes.CopyFrom(UnsortedNodes);
             
             // Sort
             SortedNodes.Sort();
