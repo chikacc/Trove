@@ -13,7 +13,7 @@ using UnityEngine.Assertions;
 
 namespace Trove.SpatialQueries
 {
-    public struct BVHNode : IComparable<BVHNode>
+    public struct BVHNode : IComparable<BVHNode> 
     {
         public AABB AABB;
         public int DataIndex; // For leaf nodes this is index of their data, but for hierarchy nodes this is index of their children
@@ -32,7 +32,7 @@ namespace Trove.SpatialQueries
         }
     }
 
-    public struct StartIndexAndCount
+    public struct NodeLevelData
     {
         public int StartIndex;
         public int Count;
@@ -51,7 +51,7 @@ namespace Trove.SpatialQueries
         internal NativeList<BVHNode> UnsortedNodes;
         internal NativeList<BVHNode> SortedNodes;
         internal NativeList<TNodeData> LeafNodeDatas;
-        internal NativeList<StartIndexAndCount> NodeLevelStartIndexesAndCounts;
+        internal NativeList<NodeLevelData> NodeLevelDatas;
         internal NativeReference<AABB> SceneAABB;
         internal NativeList<int> NodesHistogram;
         internal NativeList<WorkerLoadBalancingData> WorkerLoadBalancingDatas;
@@ -131,7 +131,7 @@ namespace Trove.SpatialQueries
                 allocator);
             bvh.SortedNodes = new NativeList<BVHNode>(bvh.UnsortedNodes.Capacity, allocator);
             bvh.LeafNodeDatas = new NativeList<TNodeData>(initialElementsCapacity, allocator);
-            bvh.NodeLevelStartIndexesAndCounts = new NativeList<StartIndexAndCount>(32, allocator);
+            bvh.NodeLevelDatas = new NativeList<NodeLevelData>(32, allocator);
             bvh.SceneAABB = new NativeReference<AABB>(allocator);
             bvh.NodesHistogram = new NativeList<int>(BVHUtils.NodesHistogramSlicesCount, allocator);
             bvh.NodesHistogram.Resize(bvh.NodesHistogram.Capacity, NativeArrayOptions.ClearMemory);
@@ -156,9 +156,9 @@ namespace Trove.SpatialQueries
                 LeafNodeDatas.Dispose(jobHandle);
             }
 
-            if (NodeLevelStartIndexesAndCounts.IsCreated)
+            if (NodeLevelDatas.IsCreated)
             {
-                NodeLevelStartIndexesAndCounts.Dispose(jobHandle);
+                NodeLevelDatas.Dispose(jobHandle);
             }
 
             if (SceneAABB.IsCreated)
@@ -297,20 +297,39 @@ namespace Trove.SpatialQueries
                 }.Schedule(dep);
             }
 
-            dep = new BVHBuildHierarchyJob
+            dep = new BVHPrecomputeHierarchyJob
             {
                 SortedNodes = SortedNodes,
-                NodeLevelStartIndexesAndCounts = NodeLevelStartIndexesAndCounts,
+                NodeLevelDatas = NodeLevelDatas,
             }.Schedule(dep);
+
+            NativeReference<int> parallelWorkersLastWrittenLevel = new NativeReference<int>(Allocator.Domain);
+            
+            dep = new BVHBuildHierarchyParallelJob
+            {
+                WorkerCount = workerCount,
+                ParallelWorkersLastWrittenLevel = parallelWorkersLastWrittenLevel,
+                SortedNodes = SortedNodes,
+                NodeLevelDatas = NodeLevelDatas,
+            }.ScheduleParallel(workerCount, 1, dep);
+            
+            dep = new BVHBuildHierarchyFinalizeJob
+            {
+                ParallelWorkersLastWrittenLevel = parallelWorkersLastWrittenLevel,
+                SortedNodes = SortedNodes,
+                NodeLevelDatas = NodeLevelDatas,
+            }.Schedule(dep);
+            
+            parallelWorkersLastWrittenLevel.Dispose(dep);
 
             return dep;
         }
 
         public unsafe void GetNodes(out UnsafeList<BVHNode> nodes,
-            out UnsafeList<StartIndexAndCount> nodeLevelStartIndexesAndCounts)
+            out UnsafeList<NodeLevelData> nodeLevelStartIndexesAndCounts)
         {
             nodes = (*SortedNodes.GetUnsafeList());
-            nodeLevelStartIndexesAndCounts = (*NodeLevelStartIndexesAndCounts.GetUnsafeList());
+            nodeLevelStartIndexesAndCounts = (*NodeLevelDatas.GetUnsafeList());
         }
 
         public Querier CreateQuerier()
@@ -328,7 +347,7 @@ namespace Trove.SpatialQueries
                 BVH.UnsortedNodes.Clear();
                 BVH.SortedNodes.Clear();
                 BVH.LeafNodeDatas.Clear();
-                BVH.NodeLevelStartIndexesAndCounts.Clear();
+                BVH.NodeLevelDatas.Clear();
                 BVH.SceneAABB.Value = AABB.GetEmpty();
             }
         }
@@ -650,82 +669,242 @@ namespace Trove.SpatialQueries
     public struct BVHPrecomputeHierarchyJob : IJob
     {
         public NativeList<BVHNode> SortedNodes;
-        public NativeList<StartIndexAndCount> NodeLevelStartIndexesAndCounts;
+        public NativeList<NodeLevelData> NodeLevelDatas;
 
+        // Resize nodes to accomodate whole hierarchy and remember data of each level
         public void Execute()
         {
-            // 
+            NodeLevelDatas.Clear();
+            
+            if (SortedNodes.Length < 2)
+            {
+                if (SortedNodes.Length > 0)
+                {
+                    NodeLevelDatas.Add(new NodeLevelData
+                    {
+                        StartIndex = 0,
+                        Count = SortedNodes.Length,
+                    });
+                }
+
+                return;
+            }
+            
+            UnsafeList<int> paddingNodeIndices = new UnsafeList<int>(64, Allocator.Temp);
+            
+            // If nodes count is not even, add padding node
+            if (SortedNodes.Length % 2 != 0)
+            {
+                paddingNodeIndices.Add(SortedNodes.Length);
+                SortedNodes.Add(new BVHNode
+                {
+                    DataIndex = -1,
+                    AABB = AABB.GetEmpty(),
+                });
+            }
+            
+            NodeLevelDatas.Add(new NodeLevelData
+            {
+                StartIndex = 0,
+                Count = SortedNodes.Length,
+            });
+
+            // Compute each other level
+            int startIndexCounter = SortedNodes.Length;
+            int workingLengthForLevel = SortedNodes.Length;
+            while (workingLengthForLevel > 1)
+            {
+                workingLengthForLevel /= 2; // ok because we always ensure our workinglength is dividable by 2
+                
+                // Ensure our workinglength is dividable by 2
+                if (workingLengthForLevel > 1 && workingLengthForLevel % 2 != 0)
+                {
+                    paddingNodeIndices.Add(startIndexCounter + workingLengthForLevel);
+                    workingLengthForLevel++;
+                }
+                
+                NodeLevelDatas.Add(new NodeLevelData
+                {
+                    StartIndex = startIndexCounter,
+                    Count = workingLengthForLevel,
+                });
+
+                startIndexCounter += workingLengthForLevel;
+
+            }
+            
+            // Resize nodes for full hierarchy
+            SortedNodes.Resize(startIndexCounter, NativeArrayOptions.UninitializedMemory);
+            
+            // Set padding node data
+            for (int i = 0; i < paddingNodeIndices.Length; i++)
+            {
+                SortedNodes[paddingNodeIndices[i]] = new BVHNode
+                {
+                    DataIndex = -1,
+                    AABB = AABB.GetEmpty(),
+                };
+            }
         }
     }
 
     [BurstCompile]
-    public struct BVHBuildHierarchyJob : IJob
+    public struct BVHBuildHierarchyParallelJob : IJobFor
     {
+        public int WorkerCount;
+        [NativeDisableParallelForRestriction]
+        public NativeReference<int> ParallelWorkersLastWrittenLevel;
+        [NativeDisableParallelForRestriction]
         public NativeList<BVHNode> SortedNodes;
-        // TODO: mostly for debug. Keep it?
-        public NativeList<StartIndexAndCount> NodeLevelStartIndexesAndCounts;
+        [ReadOnly]
+        public NativeList<NodeLevelData> NodeLevelDatas;
         
+        public void Execute(int workerIndex)
+        {
+            if(SortedNodes.Length < 2)
+                return;
+
+            int currentLevel = 0;
+            NodeLevelData nodeLevelData = NodeLevelDatas[currentLevel];
+            
+            // We need each worker to start with a nodes count that is a power of 2, so that we'll have a guarantee
+            // that there's an even amount of nodes to process at each level of the hierarchy other than the last
+            int nodesLength = MathUtilities.DivideIntCeil(nodeLevelData.Count, WorkerCount);
+            nodesLength = math.ceilpow2(nodesLength);
+
+            int nodesStart = nodeLevelData.StartIndex + (workerIndex * nodesLength);
+            int nodesEnd = math.min(nodeLevelData.Count, nodesStart + nodesLength);
+            int nextLevelAddIndex = NodeLevelDatas[currentLevel + 1].StartIndex + (workerIndex * nodesLength / 2);
+            
+            //Debug.Log($"!!!!!!!!!!!!!!!!!! TOTAL LEVELS {NodeLevelDatas.Length} FIRST LEVEL : NodesLength {nodesLength}, nodelevelDataCount {nodeLevelData.Count}");
+            
+            // For each level
+            while (nodesLength >= 2)
+            {
+                //Debug.Log($"========== processing level {currentLevel}, Start {nodesStart} ENd {nodesEnd - 1}");
+                
+                // Process all nodes except last pair
+                for (int i = nodesStart; i < nodesEnd - 2; i += 2)
+                {
+                    AABB aabb = SortedNodes[i].AABB;
+                    aabb.Include(SortedNodes[i + 1].AABB);
+
+                    //Debug.Log($"Combining nodes {i} and {i + 1} into {nextLevelAddIndex}");
+                    
+                    SortedNodes[nextLevelAddIndex] = new BVHNode
+                    {
+                        AABB = aabb,
+                        DataIndex = i,
+                    };
+
+                    nextLevelAddIndex++;
+                }
+                
+                // Process last pair which might have exceptions
+                {
+                    int lastPairIndex = nodesEnd - 2;
+                    AABB aabb = SortedNodes[lastPairIndex].AABB;
+                    if (SortedNodes[lastPairIndex + 1].DataIndex >= 0)
+                    {
+                        //Debug.Log($"Combining nodes {lastPairIndex} and {lastPairIndex + 1} into {nextLevelAddIndex}");
+                        aabb.Include(SortedNodes[lastPairIndex + 1].AABB);
+                    }
+                    else
+                    {
+                        //Debug.Log($"Combining nodes {lastPairIndex} into {nextLevelAddIndex}");
+                    }
+
+                    SortedNodes[nextLevelAddIndex] = new BVHNode
+                    {
+                        AABB = aabb,
+                        DataIndex = lastPairIndex,
+                    };
+                    nextLevelAddIndex++;
+                }
+
+
+                // Reached end of level
+                currentLevel++;
+                nodeLevelData = NodeLevelDatas[currentLevel];
+                nodesLength /= 2;
+                nodesStart = nodeLevelData.StartIndex + (workerIndex * nodesLength);
+                nodesEnd = math.min(nodesStart + nodeLevelData.Count, nodesStart + nodesLength);
+                if (currentLevel + 1 < NodeLevelDatas.Length)
+                {
+                    nextLevelAddIndex = NodeLevelDatas[currentLevel + 1].StartIndex + (workerIndex * nodesLength / 2);
+                }
+            }
+
+            if (workerIndex == 0)
+            {
+                ParallelWorkersLastWrittenLevel.Value = currentLevel;
+            }
+        }
+    }
+
+    [BurstCompile]
+    public struct BVHBuildHierarchyFinalizeJob : IJob
+    {
+        public NativeReference<int> ParallelWorkersLastWrittenLevel;
+        public NativeList<BVHNode> SortedNodes;
+        public NativeList<NodeLevelData> NodeLevelDatas;
+
         public void Execute()
         {
             if(SortedNodes.Length < 2)
                 return;
             
-            // If nodes count is not even, add padding node
-            if (SortedNodes.Length % 2 != 0)
+            //Debug.Log($"========== BEGIN SINGLETHREAD PHASE");
+
+            // Process the last few levels after all parallel workers ended on their last two top-level nodes
+            int nextLevelAddIndex = 0;
+            for (int levelIndex = ParallelWorkersLastWrittenLevel.Value; levelIndex < NodeLevelDatas.Length - 1; levelIndex++)
             {
-                SortedNodes.Add(new BVHNode
-                {
-                    DataIndex = -1,
-                    AABB = SortedNodes[SortedNodes.Length - 1].AABB,
-                });
-            }
-            
-            // Build node hierarchy
-            int nodesStartForLevel = 0;
-            int nodesCountForLevel = SortedNodes.Length;
-            while (nodesCountForLevel > 1)
-            {
-                NodeLevelStartIndexesAndCounts.Add(new StartIndexAndCount
-                {
-                    StartIndex = nodesStartForLevel,
-                    Count = nodesCountForLevel,
-                });
+                NodeLevelData nodeLevelData = NodeLevelDatas[levelIndex];
+                //Debug.Log($"========== processing level {levelIndex}, Start {nodeLevelData.StartIndex} ENd {nodeLevelData.StartIndex + nodeLevelData.Count - 1}");
+                nextLevelAddIndex = NodeLevelDatas[levelIndex + 1].StartIndex;
+
+                int nodesEnd = nodeLevelData.StartIndex + nodeLevelData.Count;
                 
-                int nodesLengthBeforeAdd = SortedNodes.Length;
-                
-                for (int i = nodesStartForLevel; i < nodesLengthBeforeAdd; i += 2)
+                for (int i = nodeLevelData.StartIndex; i < nodesEnd - 2; i += 2)
                 {
                     AABB aabb = SortedNodes[i].AABB;
                     aabb.Include(SortedNodes[i + 1].AABB);
+                    
+                    //Debug.Log($"Combining nodes {i} and {i + 1} into {nextLevelAddIndex}");
 
-                    SortedNodes.Add(new BVHNode
+                    SortedNodes[nextLevelAddIndex] = new BVHNode
                     {
                         AABB = aabb,
                         DataIndex = i,
-                    });
+                    };
+
+                    nextLevelAddIndex++;
                 }
-            
-                nodesStartForLevel = nodesLengthBeforeAdd;
-                nodesCountForLevel = SortedNodes.Length - nodesLengthBeforeAdd;
                 
-                // If nodes count is not even amd is not root node, add padding node
-                if (nodesCountForLevel > 1 && nodesCountForLevel % 2 != 0)
+                // Process last pair which might have exceptions
                 {
-                    SortedNodes.Add(new BVHNode
+                    int lastPairIndex = nodesEnd - 2;
+                    AABB aabb = SortedNodes[lastPairIndex].AABB;
+                    if (SortedNodes[lastPairIndex + 1].DataIndex >= 0)
                     {
-                        DataIndex = -1,
-                        AABB = SortedNodes[SortedNodes.Length - 1].AABB,
-                    });
-                    nodesCountForLevel += 1;
+                        //Debug.Log($"Combining nodes {lastPairIndex} and {lastPairIndex + 1} into {nextLevelAddIndex}");
+                        aabb.Include(SortedNodes[lastPairIndex + 1].AABB);
+                    }
+                    else
+                    {
+                        
+                        //Debug.Log($"Combining node {lastPairIndex} into {nextLevelAddIndex}");
+                    }
+
+                    SortedNodes[nextLevelAddIndex] = new BVHNode
+                    {
+                        AABB = aabb,
+                        DataIndex = lastPairIndex,
+                    };
+                    nextLevelAddIndex++;
                 }
             }
-            
-            // Add final level
-            NodeLevelStartIndexesAndCounts.Add(new StartIndexAndCount
-            {
-                StartIndex = nodesStartForLevel,
-                Count = nodesCountForLevel,
-            });
         }
     }
 }

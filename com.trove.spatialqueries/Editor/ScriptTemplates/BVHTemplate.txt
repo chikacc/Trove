@@ -1,0 +1,123 @@
+using Trove.SpatialQueries;
+using Unity.Burst;
+using Unity.Collections;
+using Unity.Entities;
+using Unity.Jobs;
+using Unity.Mathematics;
+using Unity.Transforms;
+using AABB = Trove.AABB;
+
+[assembly: RegisterGenericJobType(typeof(BVH<#SCRIPTNAME#NodeData>.BVHClearJob))]
+
+// This is the user data that the BVH holds for each node (the data you get as results when you query the BVH).
+// Typically this will be just the Entity most of the time, but you can store extra data such as "team" or "entity type"
+// here to avoid having to rely on a component lookup to obtain that info.
+// If you wish to add or change the data in this struct, make sure to also update the `AddToBVHParallelJob` accordingly
+// to assign that extra data.
+public struct #SCRIPTNAME#NodeData
+{
+    public Entity Entity;
+}
+
+// This is the singleton holding the BVH, so that it can be easily accessed.
+public struct #SCRIPTNAME#Singleton : IComponentData
+{
+    public BVH<#SCRIPTNAME#NodeData> BVH;
+}
+
+// This is an example of a component that you can put on entities in order to make them get added to the BVH.
+// (this component is what's used in the `AddToBVHParallelJob`).
+// You can change this to whatever you want, as long as you change the bvh add jobs in this file accordingly.
+public struct #SCRIPTNAME#Element : IComponentData
+{
+    public float3 AABBExtents;
+}
+
+partial struct #SCRIPTNAME#BuildSystem : ISystem
+{
+    private BVH<#SCRIPTNAME#NodeData> _bvh;
+
+    [BurstCompile]
+    public void OnCreate(ref SystemState state)
+    {
+        // Create BVH
+        _bvh = BVH <#SCRIPTNAME#NodeData>.Create(Allocator.Domain, 100000);
+
+        // Create singleton
+        Entity singletonEntity = state.EntityManager.CreateEntity();
+        state.EntityManager.AddComponentData(singletonEntity, new #SCRIPTNAME#Singleton
+        {
+            BVH = _bvh
+        });
+
+        state.RequireForUpdate<SpatialQueryTester>();
+    }
+
+    [BurstCompile]
+    public void OnDestroy(ref SystemState state)
+    {
+        _bvh.Dispose(default);
+    }
+
+    [BurstCompile]
+    public void OnUpdate(ref SystemState state)
+    {
+        // Clear BVH
+        state.Dependency = _bvh.ScheduleClearJob(state.Dependency);
+
+        // Add elements to BVH
+        {
+            // Create an entity query for the elements to add to BVH
+            EntityQuery bvhEtitiesQuery = SystemAPI.QueryBuilder().WithAll < LocalTransform, #SCRIPTNAME#Element>().Build();
+
+            // Reserve a range of nodes to add (this is so that we can add them in parallel later)
+            state.Dependency = new ReserveBVHForAddJob
+            {
+                ReserveCount = bvhEtitiesQuery.CalculateEntityCount(),
+                Bvh = _bvh,
+            }.Schedule(state.Dependency);
+
+            // Add nodes in parallel
+            state.Dependency = new AddToBVHParallelJob()
+            {
+                Bvh = _bvh,
+            }.ScheduleParallel(state.Dependency);
+
+            // Schedule some post-add jobs to recompute scene AABB.
+            state.Dependency = _bvh.SchedulePostAddNodeUnsafeJobs(state.Dependency);
+        }
+
+        // Build BVH
+        state.Dependency = _bvh.ScheduleBuildJobs(true, state.Dependency);
+    }
+
+    [BurstCompile]
+    public struct ReserveBVHForAddJob : IJob
+    {
+        public int ReserveCount;
+        public BVH<#SCRIPTNAME#NodeData> Bvh;
+
+        public void Execute()
+        {
+            Bvh.ReserveAddNodesUnsafe(ReserveCount, out int startIndexOfReservedRange);
+        }
+    }
+
+    /// <summary>
+    /// This is an example of a job that adds elements to the BVH in parallel.
+    /// After reserving a range of data for new nodes in the `ReserveBVHForAddJob` above, here we add the nodes in
+    /// parallel by writing directly to indexes in the reserved range.
+    /// </summary>
+    [BurstCompile]
+    public partial struct AddToBVHParallelJob : IJobEntity
+    {
+        [NativeDisableParallelForRestriction]
+        public BVH<#SCRIPTNAME#NodeData> Bvh;
+
+        public void Execute(Entity entity, [EntityIndexInQuery] int indexInQuery, in LocalTransform transform, in #SCRIPTNAME#Element element)
+        {
+            AABB aabb = AABB.FromCenterExtents(transform.Position, element.AABBExtents);
+            Bvh.AddNodeUnsafe(new #SCRIPTNAME#NodeData { Entity = entity }, aabb, indexInQuery);
+        }
+    }
+}

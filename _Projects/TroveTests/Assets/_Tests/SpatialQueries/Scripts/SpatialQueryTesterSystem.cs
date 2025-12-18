@@ -131,11 +131,11 @@ partial struct SpatialQueryTesterSystem : ISystem
                 if (debugger.DebugMortonCurve)
                 {
                     _bvh.GetNodes(out UnsafeList<BVHNode> nodes, 
-                        out UnsafeList<StartIndexAndCount> levelStartIndexesAndCounts);
+                        out UnsafeList<NodeLevelData> levelStartIndexesAndCounts);
 
                     if (levelStartIndexesAndCounts.Length > 0)
                     {
-                        StartIndexAndCount leafNodesData = levelStartIndexesAndCounts[0];
+                        NodeLevelData leafNodesData = levelStartIndexesAndCounts[0];
 
                         for (int i = leafNodesData.StartIndex; 
                              i < math.min(debugger.MortonCurveDebugIterations, leafNodesData.StartIndex + leafNodesData.Count - 1); 
@@ -151,19 +151,22 @@ partial struct SpatialQueryTesterSystem : ISystem
                 if (debugger.DebugBoundingBoxes)
                 {
                     _bvh.GetNodes(out UnsafeList<BVHNode> nodes, 
-                        out UnsafeList<StartIndexAndCount> levelStartIndexesAndCounts);
+                        out UnsafeList<NodeLevelData> levelStartIndexesAndCounts);
 
                     if (debugger.BoundingBoxDebugLevel >= 0 && levelStartIndexesAndCounts.Length > debugger.BoundingBoxDebugLevel)
                     {
-                        StartIndexAndCount levelNodesData = levelStartIndexesAndCounts[debugger.BoundingBoxDebugLevel];
-                        for (int i = levelNodesData.StartIndex; i < levelNodesData.StartIndex + levelNodesData.Count - 1; i++)
+                        NodeLevelData levelNodesData = levelStartIndexesAndCounts[debugger.BoundingBoxDebugLevel];
+                        for (int i = levelNodesData.StartIndex; i < levelNodesData.StartIndex + levelNodesData.Count; i++)
                         {
                             BVHNode node = nodes[i];
-                            _debugDrawGroup.DrawWireBox(
-                                node.AABB.GetCenter(), 
-                                quaternion.identity,
-                                node.AABB.GetExtents(), 
-                                UnityEngine.Color.green);
+                            if (node.DataIndex >= 0)
+                            {
+                                _debugDrawGroup.DrawWireBox(
+                                    node.AABB.GetCenter(),
+                                    quaternion.identity,
+                                    node.AABB.GetExtents(),
+                                    UnityEngine.Color.green);
+                            }
                         }
                     }
                 }
