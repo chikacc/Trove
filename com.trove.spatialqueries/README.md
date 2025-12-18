@@ -8,7 +8,7 @@ Refer to [Trove Readme](https://github.com/PhilSA/Trove/blob/main/README.md#inst
 
 ## Overview
 
-![](./Images/spatialqueries.gif)
+![](./Documentation~/Images/spatialqueries.gif)
 
 Trove Spatial Queries contains acceleration structures for querying objects in the scene efficiently.
 
