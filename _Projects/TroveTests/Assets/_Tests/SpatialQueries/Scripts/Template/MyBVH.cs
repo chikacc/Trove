@@ -11,7 +11,7 @@ using AABB = Trove.AABB;
 
 // This is the user data that the BVH holds for each node (the data you get as results when you query the BVH).
 // Typically this will be just the Entity most of the time, but you can store extra data such as "team" or "entity type"
-// here to avoid having to rely on a component lookup to obtain that info.
+// here to avoid having to rely on a component lookup to obtain that info after making a query.
 // If you wish to add or change the data in this struct, make sure to also update the `AddToBVHParallelJob` accordingly
 // to assign that extra data.
 public struct MyBVHNodeData
