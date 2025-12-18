@@ -155,7 +155,7 @@ MonoBehaviour:
     type: 3}
   UseParallelAdd: 1
   UseParallelSort: 1
-  UseParallelBuild: 0
+  UseParallelBuild: 1
   SpawnCount: 100000
   SpawnScale: 4
   SpawnAreaCenter:

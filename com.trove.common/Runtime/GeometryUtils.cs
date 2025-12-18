@@ -139,12 +139,12 @@ namespace Trove
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool IntersectsRay(float3 rayOrigin, float3 rayDirection, float rayLength)
+        public bool IntersectsRay(float3 rayOrigin, float3 rayDirectionNormalized, float rayLength)
         {
             float tMin = 0.0f;
             float tMax = float.MaxValue;
             
-            float3 invDir = math.rcp(rayDirection);
+            float3 invDir = math.rcp(rayDirectionNormalized);
         
             for (int i = 0; i < 3; i++)
             {

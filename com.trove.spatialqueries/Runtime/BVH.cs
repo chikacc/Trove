@@ -77,13 +77,15 @@ namespace Trove.SpatialQueries
                 Results = new UnsafeList<TNodeData>(32, Allocator.Temp);
             }
             
-            /// <summary>
-            /// Note: "results" is temporary and will be overwritten the next time any query is made
-            /// </summary>
             public void QueryAABB(in AABB aabb, out UnsafeList<TNodeData> results)
             {
                 Results.Clear();
-                
+                if (SortedNodes.Length < 1)
+                {
+                    results = Results;
+                    return;
+                }
+
                 // Add root node to stack
                 WorkStack.Clear();
                 WorkStack.Add(SortedNodes.Length - 1);
@@ -114,6 +116,11 @@ namespace Trove.SpatialQueries
             public void QueryRay(float3 rayOrigin, float3 rayDirectionNormalized, float rayLength, out UnsafeList<TNodeData> results)
             {
                 Results.Clear();
+                if (SortedNodes.Length < 1)
+                {
+                    results = Results;
+                    return;
+                };
                 
                 // Add root node to stack
                 WorkStack.Clear();
@@ -761,7 +768,7 @@ namespace Trove.SpatialQueries
                 // Ensure our workinglength is dividable by 2
                 if (workingLengthForLevel > 1 && workingLengthForLevel % 2 != 0)
                 {
-                    paddingNodeIndices.Add(startIndexCounter + workingLengthForLevel);
+                    paddingNodeIndices.AddWithGrowFactor(startIndexCounter + workingLengthForLevel);
                     workingLengthForLevel++;
                 }
                 
@@ -777,7 +784,7 @@ namespace Trove.SpatialQueries
             
             // Resize nodes for full hierarchy
             SortedNodes.Resize(startIndexCounter, NativeArrayOptions.UninitializedMemory);
-            
+
             // Set padding node data
             for (int i = 0; i < paddingNodeIndices.Length; i++)
             {
@@ -815,7 +822,10 @@ namespace Trove.SpatialQueries
             nodesLength = math.ceilpow2(nodesLength);
 
             int nodesStart = nodeLevelData.StartIndex + (workerIndex * nodesLength);
-            int nodesEnd = math.min(nodeLevelData.Count, nodesStart + nodesLength);
+            if (nodesStart >= nodeLevelData.StartIndex + nodeLevelData.Count)
+                return;
+
+            int nodesEnd =  math.min(nodeLevelData.StartIndex + nodeLevelData.Count, nodesStart + nodesLength);
             int nextLevelAddIndex = NodeLevelDatas[currentLevel + 1].StartIndex + (workerIndex * nodesLength / 2);
             
             // For each level
@@ -864,7 +874,7 @@ namespace Trove.SpatialQueries
                     nextLevelAddIndex = NodeLevelDatas[currentLevel + 1].StartIndex + (workerIndex * nodesLength / 2);
                 }
             }
-
+            
             if (workerIndex == 0)
             {
                 ParallelWorkersLastWrittenLevel.Value = currentLevel;
