@@ -10,6 +10,7 @@ public struct SpatialQueryTester : IComponentData
 
     public bool UseParallelAdd;
     public bool UseParallelSort;
+    public bool UseParallelBuild;
 
     public int SpawnCount;
     public AABB SpawnArea;
@@ -27,6 +28,7 @@ class SpatialQueryTesterAuthoring : MonoBehaviour
 
     public bool UseParallelAdd;
     public bool UseParallelSort;
+    public bool UseParallelBuild;
     
     public int SpawnCount = 100;
     public float SpawnScale = 1f;
@@ -48,6 +50,7 @@ class SpatialQueryTesterAuthoringBaker : Baker<SpatialQueryTesterAuthoring>
             
             UseParallelAdd = authoring.UseParallelAdd,
             UseParallelSort = authoring.UseParallelSort,
+            UseParallelBuild = authoring.UseParallelBuild,
             
             QuerierRatio = authoring.QuerierRatio,
             QueryScale = authoring.QueryScale,

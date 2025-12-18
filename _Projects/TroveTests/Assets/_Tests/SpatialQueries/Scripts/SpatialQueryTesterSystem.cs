@@ -37,7 +37,7 @@ partial struct SpatialQueryTesterSystem : ISystem
     [BurstCompile]
     public void OnDestroy(ref SystemState state)
     {
-        
+        _bvh.Dispose(default);
     }
 
     [BurstCompile]
@@ -108,7 +108,7 @@ partial struct SpatialQueryTesterSystem : ISystem
                 }.Schedule(state.Dependency);
             }
 
-            state.Dependency = _bvh.ScheduleBuildJobs(tester.UseParallelSort, state.Dependency);
+            state.Dependency = _bvh.ScheduleBuildJobs(tester.UseParallelSort, tester.UseParallelBuild, state.Dependency);
 
             // ---------------------------------------------------------------
             
@@ -173,15 +173,19 @@ partial struct SpatialQueryTesterSystem : ISystem
 
                 if (debugger.QueryEnabled)
                 {
-                    ComponentLookup<LocalTransform> localTransformLookup = state.GetComponentLookup<LocalTransform>(true);
-                    ComponentLookup<BVHTestObject> bvhTestObjectLookup = state.GetComponentLookup<BVHTestObject>(true);
+                    ComponentLookup<LocalTransform> localTransformLookup = SystemAPI.GetComponentLookup<LocalTransform>(true);
+                    ComponentLookup<BVHTestObject> bvhTestObjectLookup = SystemAPI.GetComponentLookup<BVHTestObject>(true);
 
-                    BVH<TestNodeData>.Querier querier = _bvh.CreateQuerier();
-                    
                     AABB aabb = AABB.FromCenterExtents(debugger.QueryPosition,
                         debugger.QueryExtents);
 
-                    querier.QueryAABB(aabb, out UnsafeList<TestNodeData> results);
+                    // UnsafeList<int> nodeStack = new UnsafeList<int>(32, Allocator.Temp);
+                    // UnsafeList<TestNodeData> queryResults = new UnsafeList<TestNodeData>(32, Allocator.Temp);
+                    // _bvh.QueryAABB(aabb, ref nodeStack, ref queryResults);
+
+                    BVH<TestNodeData>.Querier querier = _bvh.CreateQuerier();
+                    querier.QueryAABB(aabb, out UnsafeList<TestNodeData> queryResults);
+
                     
                     // Draw query bounds
                     _debugDrawGroup.DrawWireBox(
@@ -191,9 +195,9 @@ partial struct SpatialQueryTesterSystem : ISystem
                         UnityEngine.Color.blue);
                     
                     // Draw query results
-                    for (int i = 0; i < results.Length; i++)
+                    for (int i = 0; i < queryResults.Length; i++)
                     {
-                        Entity resultEntity = results[i].Entity;
+                        Entity resultEntity = queryResults[i].Entity;
                         if (localTransformLookup.TryGetComponent(resultEntity, out LocalTransform resultTransform) &&
                             bvhTestObjectLookup.TryGetComponent(resultEntity, out BVHTestObject resultBVHTestObject))
                         {
@@ -256,13 +260,16 @@ partial struct SpatialQueryTesterSystem : ISystem
         public float QueryScale;
         [ReadOnly]
         public BVH<TestNodeData> BVH;
-        
+
+        // private UnsafeList<int> nodeStack;
+        // private UnsafeList<TestNodeData> results;
         private BVH<TestNodeData>.Querier _querier;
         
         public void Execute(in LocalTransform transform, ref BVHTestObject test)
         {
             AABB aabb = AABB.FromCenterExtents(transform.Position, test.AABBExtents * transform.Scale * QueryScale);
             _querier.QueryAABB(aabb, out UnsafeList<TestNodeData> results);
+            // BVH.QueryAABB(aabb, ref nodeStack, ref results);
             test.QueryResultsStack = results.Length;
         }
 
@@ -272,6 +279,14 @@ partial struct SpatialQueryTesterSystem : ISystem
             {
                 _querier = BVH.CreateQuerier();
             }
+            // if (!nodeStack.IsCreated)
+            // {
+            //     nodeStack = new UnsafeList<int>(32, Allocator.Temp);
+            // }
+            // if (!results.IsCreated)
+            // {
+            //     results = new UnsafeList<TestNodeData>(32, Allocator.Temp);
+            // }
             
             return true;
         }
