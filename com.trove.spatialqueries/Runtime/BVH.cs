@@ -367,7 +367,7 @@ namespace Trove.SpatialQueries
     internal static class BVHUtils
     {
         internal const int NodesHistogramSlicesCount = 4000;
-        internal const uint ValuesPerNodeHistogramSlice = (uint.MaxValue / NodesHistogramSlicesCount) + 1;
+        internal const uint ValuesPerNodeHistogramSlice = uint.MaxValue / NodesHistogramSlicesCount;
         
         internal static int ComputeTotalNodesCountForEntries(int entriesCount)
         {
@@ -573,18 +573,23 @@ namespace Trove.SpatialQueries
 
         public void Execute()
         {
+            if (UnsortedNodes.Length < 1)
+                return;
+            
             int* nodesHistogramPtr = NodesHistogram.GetUnsafePtr();
             
             // Merge all into the first worker's range
-            for (int workerIndex = 1; workerIndex < WorkerCount; workerIndex++)
+            for (int sliceIndex = 0; sliceIndex < BVHUtils.NodesHistogramSlicesCount; sliceIndex++)
             {
-                for (int sliceIndex = 0; sliceIndex < BVHUtils.NodesHistogramSlicesCount; sliceIndex++)
+                ref int firstWorkerHistogramValRef =
+                    ref UnsafeUtility.ArrayElementAsRef<int>(nodesHistogramPtr, sliceIndex);
+                for (int workerIndex = 1; workerIndex < WorkerCount; workerIndex++)
                 {
-                    ref int firstWorkerHistogramValRef = ref UnsafeUtility.ArrayElementAsRef<int>(nodesHistogramPtr, sliceIndex);
-                    firstWorkerHistogramValRef += NodesHistogram[(workerIndex * BVHUtils.NodesHistogramSlicesCount) + sliceIndex];
+                    firstWorkerHistogramValRef +=
+                        NodesHistogram[(workerIndex * BVHUtils.NodesHistogramSlicesCount) + sliceIndex];
                 }
             }
-            
+
             // Compute load balancing
             // Assign a slices range to each worker so that each worker has a similar quantity of nodes to process
             int totalElementsCounter = 0;
@@ -592,12 +597,23 @@ namespace Trove.SpatialQueries
             WorkerLoadBalancingData tmpLoadBalancingData = new WorkerLoadBalancingData();
             for (int i = 0; i < BVHUtils.NodesHistogramSlicesCount; i++)
             {
-                tmpLoadBalancingData.MaxValue += BVHUtils.ValuesPerNodeHistogramSlice;
+                bool isLastSlice = i >= BVHUtils.NodesHistogramSlicesCount - 1;
+                
+                // At last slice, max value is uint max value (otherwise we may get overflow because uint maxvalue isn't perfectly dividable by nb slices)
+                if (isLastSlice)
+                {
+                    tmpLoadBalancingData.MaxValue = uint.MaxValue;
+                }
+                else
+                {
+                    tmpLoadBalancingData.MaxValue += BVHUtils.ValuesPerNodeHistogramSlice;
+                }
+
                 tmpLoadBalancingData.ElementsCount += NodesHistogram[i];
                 totalElementsCounter += NodesHistogram[i];
                 
                 if (tmpLoadBalancingData.ElementsCount >= desiredElementsPerWorker ||
-                    i >= BVHUtils.NodesHistogramSlicesCount - 1)
+                    isLastSlice)
                 {
                     uint addedMaxValue = tmpLoadBalancingData.MaxValue;
                     WorkerLoadBalancingData.Add(tmpLoadBalancingData);
@@ -611,8 +627,6 @@ namespace Trove.SpatialQueries
                     };
                 }
             }
-
-            Assert.IsTrue(WorkerLoadBalancingData.Length <= WorkerCount);
         }
     }
 
@@ -631,6 +645,8 @@ namespace Trove.SpatialQueries
             if (workerIndex < WorkerLoadBalancingData.Length)
             {
                 WorkerLoadBalancingData loadBalancingData = WorkerLoadBalancingData[workerIndex];
+
+                //Debug.Log($"Worker {workerIndex} sorting range {loadBalancingData.ElementsStartIndex} to {loadBalancingData.ElementsStartIndex + loadBalancingData.ElementsCount}. Values {loadBalancingData.MinValue} to {loadBalancingData.MaxValue}");
 
                 // First pass; group nodes by value range contiguously in sorted array
                 int addedCounter = 0;

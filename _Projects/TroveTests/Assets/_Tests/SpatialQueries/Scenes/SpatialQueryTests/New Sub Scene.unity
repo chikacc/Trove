@@ -154,7 +154,7 @@ MonoBehaviour:
   PhysicsCubePrefab: {fileID: 8139080054391949969, guid: 4d5870e23014e2b4184f7304e867842d,
     type: 3}
   UseParallelAdd: 1
-  UseParallelSort: 0
+  UseParallelSort: 1
   UseParallelBuild: 0
   SpawnCount: 100000
   SpawnScale: 4
