@@ -6,7 +6,10 @@ using AABB = Trove.AABB;
 
 public struct SpatialQueryTester : IComponentData
 {
+    public bool UsePhysicsTest;
+    
     public Entity BVHCubePrefab;
+    public Entity PhysicsCubePrefab;
 
     public bool UseParallelAdd;
     public bool UseParallelSort;
@@ -24,7 +27,10 @@ public struct SpatialQueryTester : IComponentData
 
 class SpatialQueryTesterAuthoring : MonoBehaviour
 {
+    public bool UsePhysicsTest;
+    
     public GameObject BVHCubePrefab;
+    public GameObject PhysicsCubePrefab;
 
     public bool UseParallelAdd;
     public bool UseParallelSort;
@@ -46,7 +52,10 @@ class SpatialQueryTesterAuthoringBaker : Baker<SpatialQueryTesterAuthoring>
         Entity entity = GetEntity(authoring, TransformUsageFlags.Dynamic);
         AddComponent(entity, new SpatialQueryTester
         {
+            UsePhysicsTest = authoring.UsePhysicsTest,
+            
             BVHCubePrefab = GetEntity(authoring.BVHCubePrefab, TransformUsageFlags.None),
+            PhysicsCubePrefab = GetEntity(authoring.PhysicsCubePrefab, TransformUsageFlags.None),
             
             UseParallelAdd = authoring.UseParallelAdd,
             UseParallelSort = authoring.UseParallelSort,

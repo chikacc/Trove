@@ -148,11 +148,14 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bb4cc3108dde8fa49b7bb7e83ce55543, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  UsePhysicsTest: 0
   BVHCubePrefab: {fileID: 8139080054391949969, guid: 5377fdba6c360a044b6a811782b56b71,
     type: 3}
-  UseParallelAdd: 0
-  UseParallelSort: 0
-  UseParallelBuild: 0
+  PhysicsCubePrefab: {fileID: 8139080054391949969, guid: 4d5870e23014e2b4184f7304e867842d,
+    type: 3}
+  UseParallelAdd: 1
+  UseParallelSort: 1
+  UseParallelBuild: 1
   SpawnCount: 100000
   SpawnScale: 4
   SpawnAreaCenter:

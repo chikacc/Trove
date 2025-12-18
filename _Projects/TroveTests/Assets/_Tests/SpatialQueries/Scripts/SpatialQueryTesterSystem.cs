@@ -59,9 +59,16 @@ partial struct SpatialQueryTesterSystem : ISystem
             if (!tester.IsInitialized)
             {
                 Unity.Mathematics.Random random = Unity.Mathematics.Random.CreateFromIndex(0);
+
+                Entity spawnPrefab = tester.BVHCubePrefab;
+                if (tester.UsePhysicsTest)
+                {
+                    spawnPrefab = tester.PhysicsCubePrefab;
+                }
+                
                 for (int i = 0; i < tester.SpawnCount; i++)
                 {
-                    Entity newInstance = ecb.Instantiate(tester.BVHCubePrefab);
+                    Entity newInstance = ecb.Instantiate(spawnPrefab);
                     ecb.SetComponent(newInstance, LocalTransform.FromPositionRotationScale(
                         random.NextFloat3(tester.SpawnArea.Min, tester.SpawnArea.Max),
                         random.NextQuaternionRotation(),
