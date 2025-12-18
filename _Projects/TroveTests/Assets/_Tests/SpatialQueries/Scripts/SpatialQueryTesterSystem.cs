@@ -186,16 +186,12 @@ partial struct SpatialQueryTesterSystem : ISystem
                     AABB aabb = AABB.FromCenterExtents(debugger.QueryPosition,
                         debugger.QueryExtents);
 
-                    // UnsafeList<int> nodeStack = new UnsafeList<int>(32, Allocator.Temp);
-                    // UnsafeList<TestNodeData> queryResults = new UnsafeList<TestNodeData>(32, Allocator.Temp);
-                    // _bvh.QueryAABB(aabb, ref nodeStack, ref queryResults);
-
+                    UnsafeList<TestNodeData> queryResults = new UnsafeList<TestNodeData>(32, Allocator.Temp);
                     UnsafeList<TestNodeData> allQueryResults = new UnsafeList<TestNodeData>(128, Allocator.Temp);
 
-                    BVH<TestNodeData>.Querier querier = _bvh.CreateQuerier();
-                    querier.QueryAABB(aabb, out UnsafeList<TestNodeData> queryResults);
+                    _bvh.QueryAABB(aabb, ref queryResults);
                     allQueryResults.AddRange(queryResults);
-                    querier.QueryRay(debugger.QueryPosition, debugger.QueryDirection, debugger.QueryLength, out queryResults);
+                    _bvh.QueryRay(debugger.QueryPosition, debugger.QueryDirection, debugger.QueryLength, ref queryResults);
                     allQueryResults.AddRange(queryResults);
                     
                     // Draw query ray
@@ -279,32 +275,26 @@ partial struct SpatialQueryTesterSystem : ISystem
         [ReadOnly]
         public BVH<TestNodeData> BVH;
 
-        // private UnsafeList<int> nodeStack;
-        // private UnsafeList<TestNodeData> results;
-        private BVH<TestNodeData>.Querier _querier;
+        private UnsafeList<int> nodeStack;
+        private UnsafeList<TestNodeData> results;
         
         public void Execute(in LocalTransform transform, ref BVHTestObject test)
         {
             AABB aabb = AABB.FromCenterExtents(transform.Position, test.AABBExtents * transform.Scale * QueryScale);
-            _querier.QueryAABB(aabb, out UnsafeList<TestNodeData> results);
-            // BVH.QueryAABB(aabb, ref nodeStack, ref results);
+            BVH.QueryAABB(aabb, ref results);
             test.QueryResultsStack = results.Length;
         }
 
         public bool OnChunkBegin(in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
         {
-            if (!_querier.IsCreated)
+            if (!nodeStack.IsCreated)
             {
-                _querier = BVH.CreateQuerier();
+                nodeStack = new UnsafeList<int>(32, Allocator.Temp);
             }
-            // if (!nodeStack.IsCreated)
-            // {
-            //     nodeStack = new UnsafeList<int>(32, Allocator.Temp);
-            // }
-            // if (!results.IsCreated)
-            // {
-            //     results = new UnsafeList<TestNodeData>(32, Allocator.Temp);
-            // }
+            if (!results.IsCreated)
+            {
+                results = new UnsafeList<TestNodeData>(32, Allocator.Temp);
+            }
             
             return true;
         }

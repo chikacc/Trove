@@ -56,99 +56,6 @@ namespace Trove.SpatialQueries
         internal NativeList<int> NodesHistogram;
         internal NativeList<WorkerLoadBalancingData> WorkerLoadBalancingDatas;
         
-        /// <summary>
-        /// The Querier relies on tmp allocations, so must be used right after creation (it can't be passed between
-        /// main thread and jobs, but it CAN be created and used within a job)
-        /// </summary>
-        public unsafe struct Querier
-        {
-            private UnsafeList<BVHNode> SortedNodes;
-            private UnsafeList<TNodeData> LeafNodeDatas;
-            private UnsafeList<int> WorkStack;
-            private UnsafeList<TNodeData> Results;
-
-            public bool IsCreated => WorkStack.IsCreated;
-
-            internal Querier(NativeList<BVHNode> sortedNodes, NativeList<TNodeData> leafNodeDatas)
-            {
-                SortedNodes = *sortedNodes.GetUnsafeList();
-                LeafNodeDatas = *leafNodeDatas.GetUnsafeList();
-                WorkStack = new UnsafeList<int>(32, Allocator.Temp);
-                Results = new UnsafeList<TNodeData>(32, Allocator.Temp);
-            }
-            
-            public void QueryAABB(in AABB aabb, out UnsafeList<TNodeData> results)
-            {
-                Results.Clear();
-                if (SortedNodes.Length < 1)
-                {
-                    results = Results;
-                    return;
-                }
-
-                // Add root node to stack
-                WorkStack.Clear();
-                WorkStack.Add(SortedNodes.Length - 1);
-
-                for (int i = 0; i < WorkStack.Length; i++)
-                {
-                    int nodeIndex = WorkStack[i];
-                    BVHNode queriedNode = SortedNodes[nodeIndex];
-                    if (queriedNode.IsValid() && aabb.OverlapsAABB(queriedNode.AABB))
-                    {
-                        if (nodeIndex < LeafNodeDatas.Length)
-                        {
-                            Results.AddWithGrowFactor(LeafNodeDatas[queriedNode.DataIndex]);
-                        }
-                        else
-                        {
-                            // Add both child nodes to stack
-                            WorkStack.AddWithGrowFactor(queriedNode.DataIndex);
-                            WorkStack.AddWithGrowFactor(queriedNode.DataIndex + 1);
-                        }
-                    }
-                }
-                
-                results = Results;
-            }
-
-            // TODO: review my AABB.IntersectsRay
-            public void QueryRay(float3 rayOrigin, float3 rayDirectionNormalized, float rayLength, out UnsafeList<TNodeData> results)
-            {
-                Results.Clear();
-                if (SortedNodes.Length < 1)
-                {
-                    results = Results;
-                    return;
-                };
-                
-                // Add root node to stack
-                WorkStack.Clear();
-                WorkStack.Add(SortedNodes.Length - 1);
-
-                for (int i = 0; i < WorkStack.Length; i++)
-                {
-                    int nodeIndex = WorkStack[i];
-                    BVHNode queriedNode = SortedNodes[nodeIndex];
-                    if (queriedNode.IsValid() && queriedNode.AABB.IntersectsRay(rayOrigin, rayDirectionNormalized, rayLength))
-                    {
-                        if (nodeIndex < LeafNodeDatas.Length)
-                        {
-                            Results.AddWithGrowFactor(LeafNodeDatas[queriedNode.DataIndex]);
-                        }
-                        else
-                        {
-                            // Add both child nodes to stack
-                            WorkStack.AddWithGrowFactor(queriedNode.DataIndex);
-                            WorkStack.AddWithGrowFactor(queriedNode.DataIndex + 1);
-                        }
-                    }
-                }
-                
-                results = Results;
-            }
-        }
-
         public static BVH<TNodeData> Create(Allocator allocator, int initialElementsCapacity)
         {
             BVH<TNodeData> bvh = new BVH<TNodeData>();
@@ -231,6 +138,131 @@ namespace Trove.SpatialQueries
                 AABB = aabb,
             };
             LeafNodeDatas[atIndex] = nodeData;
+        }
+            
+        public void QueryAABB(in AABB aabb, ref UnsafeList<TNodeData> results)
+        {
+            results.Clear();
+            
+            if (SortedNodes.Length < 1)
+            {
+                return;
+            }
+            
+            QueryAABBRecursive(SortedNodes.Length - 1, aabb, ref results);
+        }
+
+        internal void QueryAABBRecursive(int nodeIndex, in AABB aabb, ref UnsafeList<TNodeData> results)
+        {
+            BVHNode queriedNode = SortedNodes[nodeIndex];
+            if (queriedNode.IsValid() && aabb.OverlapsAABB(queriedNode.AABB))
+            {
+                if (nodeIndex < LeafNodeDatas.Length)
+                {
+                    results.AddWithGrowFactor(LeafNodeDatas[queriedNode.DataIndex]);
+                }
+                else
+                {
+                    // Add both child nodes to stack
+                    QueryAABBRecursive(queriedNode.DataIndex, aabb, ref results);
+                    QueryAABBRecursive(queriedNode.DataIndex + 1, aabb, ref results);
+                } 
+            }
+        }
+
+        public void QueryAABB(in AABB aabb, ref UnsafeList<int> workStack, ref UnsafeList<TNodeData> results)
+        {
+            results.Clear();
+            if (SortedNodes.Length < 1)
+            {
+                return;
+            }
+        
+            // Add root node to stack
+            workStack.Clear();
+            workStack.Add(SortedNodes.Length - 1);
+        
+            for (int i = 0; i < workStack.Length; i++)
+            {
+                int nodeIndex = workStack[i];
+                BVHNode queriedNode = SortedNodes[nodeIndex];
+                if (queriedNode.IsValid() && aabb.OverlapsAABB(queriedNode.AABB))
+                {
+                    if (nodeIndex < LeafNodeDatas.Length)
+                    {
+                        results.AddWithGrowFactor(LeafNodeDatas[queriedNode.DataIndex]);
+                    }
+                    else
+                    {
+                        // Add both child nodes to stack
+                        workStack.AddWithGrowFactor(queriedNode.DataIndex);
+                        workStack.AddWithGrowFactor(queriedNode.DataIndex + 1);
+                    }
+                }
+            }
+        }
+            
+        public void QueryRay(float3 rayOrigin, float3 rayDirectionNormalized, float rayLength, ref UnsafeList<TNodeData> results)
+        {
+            results.Clear();
+            
+            if (SortedNodes.Length < 1)
+            {
+                return;
+            }
+            
+            QueryRayRecursive(SortedNodes.Length - 1, rayOrigin, rayDirectionNormalized, rayLength, ref results);
+        }
+
+        internal void QueryRayRecursive(int nodeIndex, float3 rayOrigin, float3 rayDirectionNormalized, float rayLength, ref UnsafeList<TNodeData> results)
+        {
+            BVHNode queriedNode = SortedNodes[nodeIndex];
+            if (queriedNode.IsValid() && queriedNode.AABB.IntersectsRay(rayOrigin, rayDirectionNormalized, rayLength))
+            {
+                if (nodeIndex < LeafNodeDatas.Length)
+                {
+                    results.AddWithGrowFactor(LeafNodeDatas[queriedNode.DataIndex]);
+                }
+                else
+                {
+                    // Add both child nodes to stack
+                    QueryRayRecursive(queriedNode.DataIndex, rayOrigin, rayDirectionNormalized, rayLength, ref results);
+                    QueryRayRecursive(queriedNode.DataIndex + 1, rayOrigin, rayDirectionNormalized, rayLength, ref results);
+                }
+            }
+        }
+
+        // TODO: review my AABB.IntersectsRay
+        public void QueryRay(float3 rayOrigin, float3 rayDirectionNormalized, float rayLength, ref UnsafeList<int> workStack, ref UnsafeList<TNodeData> results)
+        {
+            results.Clear();
+            if (SortedNodes.Length < 1)
+            {
+                return;
+            };
+            
+            // Add root node to stack
+            workStack.Clear();
+            workStack.Add(SortedNodes.Length - 1);
+
+            for (int i = 0; i < workStack.Length; i++)
+            {
+                int nodeIndex = workStack[i];
+                BVHNode queriedNode = SortedNodes[nodeIndex];
+                if (queriedNode.IsValid() && queriedNode.AABB.IntersectsRay(rayOrigin, rayDirectionNormalized, rayLength))
+                {
+                    if (nodeIndex < LeafNodeDatas.Length)
+                    {
+                        results.AddWithGrowFactor(LeafNodeDatas[queriedNode.DataIndex]);
+                    }
+                    else
+                    {
+                        // Add both child nodes to stack
+                        workStack.AddWithGrowFactor(queriedNode.DataIndex);
+                        workStack.AddWithGrowFactor(queriedNode.DataIndex + 1);
+                    }
+                }
+            }
         }
 
         public JobHandle ScheduleClearJob(JobHandle dep)
@@ -367,11 +399,6 @@ namespace Trove.SpatialQueries
         {
             nodes = (*SortedNodes.GetUnsafeList());
             nodeLevelStartIndexesAndCounts = (*NodeLevelDatas.GetUnsafeList());
-        }
-
-        public Querier CreateQuerier()
-        {
-            return new Querier(SortedNodes, LeafNodeDatas);
         }
     
         [BurstCompile]

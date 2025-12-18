@@ -30,25 +30,25 @@ Look at the comments in the template for further info.
 
 To query the BVH:
 * Get the BVH from its singleton entity (created in the BVH template)
-* Create a BVH querier using `BVH.CreateQuerier()`
-* Make queries with the querier (ex: `_querier.QueryAABB(aabb, out UnsafeList<MyBVHNodeData> results);`)
+* Make queries with the query methods (ex: `BVH.QueryAABB();`, `BVH.QueryRay();`)
 
-NOTE: a BVH querier is a temporary struct that relies on Temp allocations. It shouldn't be created on the main thread and then passed to a job. Instead, either create and use it directly on the main thread, or create and use it in a job. The following code is an example of a `IJobEntity` that uses the Querier to make queries:
+he following code is an example of a `IJobEntity` that makes BVH queries:
 
 ```cs
 [BurstCompile]
 public partial struct QueryBVHJob : IJobEntity, IJobEntityChunkBeginEnd
 {
-    public float QueryScale;
+    // We use the BVH for queries, so it can be ReadOnly
     [ReadOnly]
     public BVH<MyBVHNodeData> BVH;
     
-    // We cache a private Querier here, reusable throughout entity iteration
-    private BVH<MyBVHNodeData>.Querier _querier;
+    // We cache a private list of results here, reusable throughout entity iteration.
+    // This way we don't have to constantly re-allocate it.
+    private UnsafeList<MyBVHNodeData> results;
     
     public void Execute(in LocalTransform transform, ref MyQuerier querier)
     {
-        _querier.QueryAABB(AABB.FromCenterExtents(transform.position, new float3(querier.Range)), out UnsafeList<MyBVHNodeData> results);
+        BVH.QueryAABB(AABB.FromCenterExtents(transform.position, new float3(querier.Range)), ref UnsafeList<MyBVHNodeData> results);
 
         // Do what we want with the query results
         Debug.Log($"Query results count: {results.Length}");
@@ -56,10 +56,10 @@ public partial struct QueryBVHJob : IJobEntity, IJobEntityChunkBeginEnd
 
     public bool OnChunkBegin(in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
     {
-        // We create the querier only once per thread, and check for creation only once per chunk
-        if (!_querier.IsCreated)
+        // We create the results list only once per thread, and check for creation only once per chunk
+        if (!results.IsCreated)
         {
-            _querier = BVH.CreateQuerier();
+            results = new UnsafeList<MyBVHNodeData>(32, Allocator.Temp);
         }
         
         return true;
