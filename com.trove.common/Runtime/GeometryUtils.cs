@@ -109,16 +109,9 @@ namespace Trove
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool OverlapAABB(in AABB other)
+        public bool OverlapsAABB(in AABB other)
         {
-            return GeometryUtils.OverlapBounds(in Min, in Max, in other.Min, in other.Max);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool OverlapTriangleAABB(float3 v0, float3 v1, float3 v2)
-        {
-            AABB triangleAABB = AABB.FromTriangle(v0, v1, v2);
-            return OverlapAABB(in triangleAABB);
+            return math.all(Max >= other.Min & Min <= other.Max);
         }
         
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -131,6 +124,59 @@ namespace Trove
         public float3 GetExtents()
         {
             return (Max - Min) * 0.5f;
+        }        
+        
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public float3 ClosestPoint(float3 position)
+        {
+            return math.min(Max, math.max(Min, position));
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool Contains(float3 point)
+        {
+            return math.all(point >= Min & point <= Max);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool IntersectsRay(float3 rayOrigin, float3 rayDirection, float rayLength)
+        {
+            float tMin = 0.0f;
+            float tMax = float.MaxValue;
+            
+            float3 invDir = math.rcp(rayDirection);
+        
+            for (int i = 0; i < 3; i++)
+            {
+                float t1 = (Min[i] - rayOrigin[i]) * invDir[i];
+                float t2 = (Max[i] - rayOrigin[i]) * invDir[i];
+
+                if (t1 > t2)
+                {
+                    (t1, t2) = (t2, t1);
+                }
+
+                tMin = math.max(tMin, t1);
+                tMax = math.min(tMax, t2);
+
+                if (tMin > tMax)
+                {
+                    return false;
+                }
+            }
+
+            if (tMax < 0.0f)
+            {
+                return false;
+            }
+
+            float distance = tMin;
+            if (distance <= rayLength)
+            {
+                return true;
+            }
+
+            return false;
         }
     }
 
@@ -183,10 +229,7 @@ namespace Trove
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static bool OverlapBounds(in float3 aMin, in float3 aMax, in float3 bMin, in float3 bMax)
         {
-            return
-                aMin.x <= bMax.x && aMax.x >= bMin.x &&
-                aMin.y <= bMax.y && aMax.y >= bMin.y &&
-                aMin.z <= bMax.z && aMax.z >= bMin.z;
+            return math.all(aMax >= bMin & aMin <= bMax);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

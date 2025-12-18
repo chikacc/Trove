@@ -190,10 +190,21 @@ partial struct SpatialQueryTesterSystem : ISystem
                     // UnsafeList<TestNodeData> queryResults = new UnsafeList<TestNodeData>(32, Allocator.Temp);
                     // _bvh.QueryAABB(aabb, ref nodeStack, ref queryResults);
 
+                    UnsafeList<TestNodeData> allQueryResults = new UnsafeList<TestNodeData>(128, Allocator.Temp);
+
                     BVH<TestNodeData>.Querier querier = _bvh.CreateQuerier();
                     querier.QueryAABB(aabb, out UnsafeList<TestNodeData> queryResults);
-
+                    allQueryResults.AddRange(queryResults);
+                    querier.QueryRay(debugger.QueryPosition, debugger.QueryDirection, debugger.QueryLength, out queryResults);
+                    allQueryResults.AddRange(queryResults);
                     
+                    // Draw query ray
+                    _debugDrawGroup.DrawRay(
+                        debugger.QueryPosition, 
+                        debugger.QueryDirection, 
+                        debugger.QueryLength,
+                        UnityEngine.Color.blue);
+                        
                     // Draw query bounds
                     _debugDrawGroup.DrawWireBox(
                         debugger.QueryPosition, 
@@ -202,9 +213,9 @@ partial struct SpatialQueryTesterSystem : ISystem
                         UnityEngine.Color.blue);
                     
                     // Draw query results
-                    for (int i = 0; i < queryResults.Length; i++)
+                    for (int i = 0; i < allQueryResults.Length; i++)
                     {
-                        Entity resultEntity = queryResults[i].Entity;
+                        Entity resultEntity = allQueryResults[i].Entity;
                         if (localTransformLookup.TryGetComponent(resultEntity, out LocalTransform resultTransform) &&
                             bvhTestObjectLookup.TryGetComponent(resultEntity, out BVHTestObject resultBVHTestObject))
                         {

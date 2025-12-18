@@ -92,7 +92,7 @@ namespace Trove.SpatialQueries
                 {
                     int nodeIndex = WorkStack[i];
                     BVHNode queriedNode = SortedNodes[nodeIndex];
-                    if (queriedNode.IsValid() && aabb.OverlapAABB(queriedNode.AABB))
+                    if (queriedNode.IsValid() && aabb.OverlapsAABB(queriedNode.AABB))
                     {
                         if (nodeIndex < LeafNodeDatas.Length)
                         {
@@ -110,17 +110,36 @@ namespace Trove.SpatialQueries
                 results = Results;
             }
 
-            // TODO
-            // public void QueryRay(in AABB aabb, out UnsafeList<TNodeData> results)
-            // {
-            //     Results.Clear();
-            //     
-            //     // Add root node to stack
-            //     WorkStack.Clear();
-            //     WorkStack.Add(SortedNodes.Length - 1);
-            //     
-            //     results = Results;
-            // }
+            // TODO: review my AABB.IntersectsRay
+            public void QueryRay(float3 rayOrigin, float3 rayDirectionNormalized, float rayLength, out UnsafeList<TNodeData> results)
+            {
+                Results.Clear();
+                
+                // Add root node to stack
+                WorkStack.Clear();
+                WorkStack.Add(SortedNodes.Length - 1);
+
+                for (int i = 0; i < WorkStack.Length; i++)
+                {
+                    int nodeIndex = WorkStack[i];
+                    BVHNode queriedNode = SortedNodes[nodeIndex];
+                    if (queriedNode.IsValid() && queriedNode.AABB.IntersectsRay(rayOrigin, rayDirectionNormalized, rayLength))
+                    {
+                        if (nodeIndex < LeafNodeDatas.Length)
+                        {
+                            Results.AddWithGrowFactor(LeafNodeDatas[queriedNode.DataIndex]);
+                        }
+                        else
+                        {
+                            // Add both child nodes to stack
+                            WorkStack.AddWithGrowFactor(queriedNode.DataIndex);
+                            WorkStack.AddWithGrowFactor(queriedNode.DataIndex + 1);
+                        }
+                    }
+                }
+                
+                results = Results;
+            }
         }
 
         public static BVH<TNodeData> Create(Allocator allocator, int initialElementsCapacity)
@@ -645,8 +664,6 @@ namespace Trove.SpatialQueries
             if (workerIndex < WorkerLoadBalancingData.Length)
             {
                 WorkerLoadBalancingData loadBalancingData = WorkerLoadBalancingData[workerIndex];
-
-                //Debug.Log($"Worker {workerIndex} sorting range {loadBalancingData.ElementsStartIndex} to {loadBalancingData.ElementsStartIndex + loadBalancingData.ElementsCount}. Values {loadBalancingData.MinValue} to {loadBalancingData.MaxValue}");
 
                 // First pass; group nodes by value range contiguously in sorted array
                 int addedCounter = 0;

@@ -6,6 +6,8 @@ public struct BVHDebugger : IComponentData
 {
     public bool QueryEnabled;
     public float3 QueryPosition;
+    public float3 QueryDirection;
+    public float QueryLength;
     public float3 QueryExtents;
     
     public bool DebugMortonCurve;
@@ -19,6 +21,7 @@ class BVHDebuggerBehaviour : MonoBehaviour
 {
     public bool QueryEnabled;
     public float3 QueryExtents;
+    public float QueryLength;
     
     public bool DebugMortonCurve;
     public int MortonCurveDebugIterations = int.MaxValue;
@@ -42,7 +45,9 @@ class BVHDebuggerBehaviour : MonoBehaviour
         {
             QueryEnabled = QueryEnabled,
             QueryPosition = transform.position,
+            QueryDirection = transform.forward,
             QueryExtents = QueryExtents,
+            QueryLength = QueryLength,
             
             DebugMortonCurve = DebugMortonCurve,
             MortonCurveDebugIterations = MortonCurveDebugIterations,
