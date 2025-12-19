@@ -16,6 +16,13 @@ namespace Trove.SpatialQueries
         public int DataIndex; // For leaf nodes this is index of their data, but for parent nodes this is index of their first child
         public uint MortonCode;
 
+        public BVHNode(in AABB aabb)
+        {
+            AABB = aabb;
+            DataIndex = default;
+            MortonCode = default;
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool IsValid()
         {
@@ -60,12 +67,12 @@ namespace Trove.SpatialQueries
             public bool NextResultsBatch(in BVH<TNodeData> bvh, ref UnsafeList<NearestNeighborResult> results, bool sortResults = true)
             {
                 results.Clear();
-                
+
                 if (CurrentLevel >= bvh.NodeLevelDatas.Length || InvalidatedForNextBatches)
                     return false;
-                
+
                 NodeLevelData levelData = bvh.NodeLevelDatas[CurrentLevel];
-                
+
                 // Do a query at the current distance
                 AABB currentNodeAABB = bvh.SortedNodes[levelData.StartIndex + CurrentNodeIndexInLevel].AABB;
                 float queryDistance = math.distance(currentNodeAABB.FarthestPoint(Position), Position);
@@ -75,24 +82,24 @@ namespace Trove.SpatialQueries
                     InvalidatedForNextBatches = true;
                     queryDistance = math.min(queryDistance, MaxDistance);
                 }
-                
+
                 bvh.QueryNearestNeighborsInternal(Position, queryDistance, ref results);
 
                 if (results.Length == 0)
                     return false;
-                
+
                 if (sortResults)
                 {
                     results.Sort();
                 }
-                
+
                 CurrentLevel++;
                 CurrentNodeIndexInLevel /= 2; // parent node
 
                 return true;
             }
         }
-        
+
         public struct NearestNeighborResult : IComparable<NearestNeighborResult>
         {
             public TNodeData Data;
@@ -173,14 +180,10 @@ namespace Trove.SpatialQueries
             LeafNodeDatas.Resize(LeafNodeDatas.Length + addNodesCount, NativeArrayOptions.UninitializedMemory);
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public unsafe void AddNodeUnsafe(in TNodeData nodeData, in AABB aabb, int atIndex)
+        public unsafe void GetUnsafeNodePtrs(out BVHNode* nodesPtr, out TNodeData* leafNodesPtr)
         {
-            NodesA[atIndex] = new BVHNode
-            {
-                AABB = aabb,
-            };
-            LeafNodeDatas[atIndex] = nodeData;
+            nodesPtr = NodesA.GetUnsafePtr();
+            leafNodesPtr = LeafNodeDatas.GetUnsafePtr();
         }
 
         public unsafe bool QueryAABB(in AABB aabb, ref UnsafeList<TNodeData> results)
@@ -209,7 +212,7 @@ namespace Trove.SpatialQueries
             // Early out if invalid or no overlap
             if (!aabb.OverlapsAABB(node.AABB) || !node.IsValid())
                 return;
-            
+
             if (nodeIndex < leafNodesCount)
             {
                 // Leaf node - add result
@@ -291,7 +294,7 @@ namespace Trove.SpatialQueries
             // Early out if invalid or no overlap
             if (!node.AABB.OverlapsSphere(position, radiusSq) || !node.IsValid())
                 return;
-            
+
             if (nodeIndex < leafNodesCount)
             {
                 // Leaf node - add result
@@ -321,7 +324,7 @@ namespace Trove.SpatialQueries
             // Add root node to stack
             workStack.Clear();
             workStack.Add(SortedNodes.Length - 1);
-            
+
             float radiusSq = radius * radius;
 
             // Fully process stack 1
@@ -386,7 +389,7 @@ namespace Trove.SpatialQueries
             else
             {
                 // Internal node - recurse to children
-                QueryRayRecursive(node.DataIndex, rayOrigin, rayDirectionNormalized, rayLength, nodesPtr, 
+                QueryRayRecursive(node.DataIndex, rayOrigin, rayDirectionNormalized, rayLength, nodesPtr,
                     leafDataPtr, leafNodesCount, ref results);
                 QueryRayRecursive(node.DataIndex + 1, rayOrigin, rayDirectionNormalized, rayLength, nodesPtr,
                     leafDataPtr, leafNodesCount, ref results);
@@ -436,12 +439,12 @@ namespace Trove.SpatialQueries
             return results.Length > 0;
         }
 
-        public bool QueryNearestNeighbor(float3 position, ref UnsafeList<NearestNeighborResult> results, 
+        public bool QueryNearestNeighbor(float3 position, ref UnsafeList<NearestNeighborResult> results,
             out NearestNeighborResult nearestResult, float maxDistance = float.MaxValue)
         {
             if (CreateNearestNeighborsQuerier(position, out NearestNeighborsQuerier querier, maxDistance))
             {
-                if(querier.NextResultsBatch(in this, ref results, true))
+                if (querier.NextResultsBatch(in this, ref results, true))
                 {
                     nearestResult = results[0];
                     return true;
@@ -468,13 +471,13 @@ namespace Trove.SpatialQueries
             {
                 // Calculate the morton code of the position
                 float3 sceneDimensions = SceneAABB.Value.Max - SceneAABB.Value.Min;
-                float3 normalizedPositionInScene = (position - SceneAABB.Value.Min) / sceneDimensions; 
+                float3 normalizedPositionInScene = (position - SceneAABB.Value.Min) / sceneDimensions;
                 uint queriedMortonCode = BVHUtils.ComputeMortonCode(normalizedPositionInScene);
-                
+
                 // Approximate the index of this morton code in sorted leaf nodes
                 float normMortonValue = (float)queriedMortonCode / (float)uint.MaxValue;
                 int queriedNodeIndex = (int)math.round(LeafNodeDatas.Length * normMortonValue);
-                
+
                 // Search for closest morton from that index
                 int indexOfClosestMorton = -1;
                 uint iteratedMorton = SortedNodes[queriedNodeIndex].MortonCode;
@@ -487,8 +490,8 @@ namespace Trove.SpatialQueries
                     // binary search for match
                     bool iteratedMortonIsGreater = iteratedMorton > queriedMortonCode;
                     int minIndex = iteratedMortonIsGreater ? 0 : queriedNodeIndex;
-                    int maxIndex = iteratedMortonIsGreater ? queriedNodeIndex : LeafNodeDatas.Length ;
-                
+                    int maxIndex = iteratedMortonIsGreater ? queriedNodeIndex : LeafNodeDatas.Length;
+
                     while (maxIndex - minIndex > 1)
                     {
                         queriedNodeIndex = minIndex + ((maxIndex - minIndex) / 2);
@@ -505,7 +508,7 @@ namespace Trove.SpatialQueries
                             maxIndex = iteratedMortonIsGreater ? queriedNodeIndex : maxIndex;
                         }
                     }
-                    
+
                     indexOfClosestMorton = queriedNodeIndex;
                 }
 
@@ -513,7 +516,7 @@ namespace Trove.SpatialQueries
                 {
                     float3 iteratedNodePos = SortedNodes[queriedNodeIndex].AABB.GetCenter();
                     float closestDistanceSqSoFar = math.distancesq(position, iteratedNodePos);
-                    
+
                     // Find the closest in a range of X from that node
                     // (this mitigates the impact of large jumps in decoded morton code positions)
                     int halfRange = 8;
@@ -529,7 +532,7 @@ namespace Trove.SpatialQueries
                             closestDistanceSqSoFar = distanceSq;
                         }
                     }
-                    
+
                     querier = new NearestNeighborsQuerier
                     {
                         Position = position,
@@ -569,7 +572,7 @@ namespace Trove.SpatialQueries
             // Early out if invalid or no overlap
             if (!node.AABB.OverlapsSphere(position, radiusSq) || !node.IsValid())
                 return;
-            
+
             if (nodeIndex < leafNodesCount)
             {
                 // Leaf node - add result
@@ -586,7 +589,7 @@ namespace Trove.SpatialQueries
                 QueryNearestNeighborsInternalRecursive(node.DataIndex + 1, position, radiusSq, nodesPtr, leafDataPtr, leafNodesCount, ref results);
             }
         }
-        
+
         public JobHandle ScheduleClearJob(JobHandle dep)
         {
             dep = new BVHClearJob
@@ -638,7 +641,7 @@ namespace Trove.SpatialQueries
                 bool isEvenPass = pass % 2 == 0;
                 NativeList<BVHNode> inputNodes = isEvenPass ? NodesA : NodesB;
                 NativeList<BVHNode> outputNodes = isEvenPass ? NodesB : NodesA; // Final pass will be 3, which means output ends up in NodesA
-                
+
                 dep = new BVHRadixSortInitializePassJob
                 {
                     WorkerCount = workerCount,
@@ -855,7 +858,7 @@ namespace Trove.SpatialQueries
                 ref BVHNode nodeRef = ref UnsafeUtility.ArrayElementAsRef<BVHNode>(nodesPtr, i);
                 float3 normalizedPosition = (nodeRef.AABB.GetCenter() - sceneAABB.Min) / sceneDimensions; // Position from 0f to 1f in the scene
                 nodeRef.MortonCode = BVHUtils.ComputeMortonCode(normalizedPosition);
-                nodeRef.DataIndex = i; 
+                nodeRef.DataIndex = i;
             }
         }
     }
@@ -1199,7 +1202,7 @@ namespace Trove.SpatialQueries
                 {
                     AABB aabb = SortedNodes[i].AABB;
                     aabb.Include(SortedNodes[i + 1].AABB);
-                    
+
                     SortedNodes[nextLevelAddIndex] = new BVHNode
                     {
                         AABB = aabb,
