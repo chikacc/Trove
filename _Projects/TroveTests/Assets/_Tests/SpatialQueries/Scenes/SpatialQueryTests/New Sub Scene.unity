@@ -162,9 +162,9 @@ MonoBehaviour:
     y: 0
     z: 0
   SpawnAreaExtents:
-    x: 500
-    y: 500
-    z: 500
+    x: 1000
+    y: 1000
+    z: 1000
   QueryScale: 4
 --- !u!4 &1436509444
 Transform:

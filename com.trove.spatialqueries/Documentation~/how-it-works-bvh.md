@@ -15,13 +15,12 @@ This gives you a `MyBVHBuildSystem` that takes care of:
 * Creating a BVH on start and putting it in a `MyBVHSingleton` singleton component for easy access outside of this system.
 * Updating the BVH:
     * First, clear the BVH using `_bvh.ScheduleClearJob`.
-    * Then, add all entities that have a `LocalTransform` and a `MyBVHElement` component to the BVH, using the `ReserveBVHForAddJob` and `AddToBVHParallelJob` jobs.
-    * Then, run some jobs that are needed after we try to parallel add to the BVH, using `_bvh.SchedulePostAddNodeUnsafeJobs`.
+    * Then, add all entities that have a `LocalTransform` and a `MyBVHElement` component to the BVH. There is a parallel version and a single-thread version of this in the template:
+        * Single-thread: `AddToBVHJob` job.
+        * Parallel: uses the `ReserveBVHForAddJob` and `AddToBVHParallelJob` jobs. Then, run some jobs that are needed after we try to parallel add to the BVH, using `_bvh.SchedulePostAddNodeUnsafeJobs`.
     * Then, build the BVH using `_bvh.ScheduleBuildJobs()`.
 
-NOTE: if you choose to modify this, just remember that all adding of nodes to the BVH must happen after `_bvh.ScheduleClearJob` and before `_bvh.SchedulePostAddNodeUnsafeJobs`.
-
-Simply add a `MyBVHElement` to your entities in order to make them added to the BVH and queryable automatically. If you wish to change the way in which these entities are added to the BVH (how their AABB is calculated, what extra data is stored in the BVH query results, etc...), you can modify the `AddToBVHParallelJob` job and the `MyBVHNodeData`.
+Simply add a `MyBVHElement` component to your entities in order to make them added to the BVH and queryable automatically. If you wish to change the way in which these entities are added to the BVH (how their AABB is calculated, what extra data is stored in the BVH query results, etc...), you can modify the `AddToBVHParallelJob` job and the `MyBVHNodeData`.
 
 Look at the comments in the template for further info.
 

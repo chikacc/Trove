@@ -8,7 +8,6 @@ using Unity.Transforms;
 using AABB = Trove.AABB;
 
 [assembly: RegisterGenericJobType(typeof(BVH<#SCRIPTNAME#NodeData>.BVHClearJob))]
-[assembly: RegisterGenericJobType(typeof(BVH<#SCRIPTNAME#NodeData>.BVHReorderNodesJob))]
 
 // This is the user data that the BVH holds for each node (the data you get as results when you query the BVH).
 // Typically this will be just the Entity most of the time, but you can store extra data such as "team" or "entity type"
@@ -63,10 +62,14 @@ partial struct #SCRIPTNAME#BuildSystem : ISystem
     [BurstCompile]
     public void OnUpdate(ref SystemState state)
     {
+        // This controls whether to build the BVH in parallel or not
+        bool buildParallel = true;
+        
         // Clear BVH
         state.Dependency = _bvh.ScheduleClearJob(state.Dependency);
 
         // Add elements to BVH
+        if(buildParallel)
         {
             // Create an entity query for the elements to add to BVH
             EntityQuery bvhEtitiesQuery = SystemAPI.QueryBuilder().WithAll < LocalTransform, #SCRIPTNAME#Element>().Build();
@@ -84,12 +87,20 @@ partial struct #SCRIPTNAME#BuildSystem : ISystem
                 Bvh = _bvh,
             }.ScheduleParallel(state.Dependency);
 
-            // Schedule some post-add jobs to recompute scene AABB.
-            state.Dependency = _bvh.SchedulePostAddNodeUnsafeJobs(state.Dependency);
+            // Schedule some jobs to recompute scene AABB after using `BVH.AddNodeUnsafe()`.
+            state.Dependency = _bvh.SchedulePostAddNodeUnsafeJobs(buildParallel, state.Dependency);
+        }
+        else
+        {
+            // Add nodes in single-thread
+            state.Dependency = new AddToBVHJob()
+            {
+                Bvh = _bvh,
+            }.Schedule(state.Dependency);
         }
 
         // Build BVH
-        state.Dependency = _bvh.ScheduleBuildJobs(true, state.Dependency);
+        state.Dependency = _bvh.ScheduleBuildJobs(buildParallel, state.Dependency);
     }
 
     [BurstCompile]
@@ -119,6 +130,21 @@ partial struct #SCRIPTNAME#BuildSystem : ISystem
         {
             AABB aabb = AABB.FromCenterExtents(transform.Position, element.AABBExtents);
             Bvh.AddNodeUnsafe(new #SCRIPTNAME#NodeData { Entity = entity }, aabb, indexInQuery);
+        }
+    }
+    
+    /// <summary>
+    /// This is an example of a job that adds elements to the BVH in single-thread.
+    /// </summary>
+    [BurstCompile]
+    public partial struct AddToBVHJob : IJobEntity
+    {
+        public BVH<#SCRIPTNAME#NodeData> Bvh;
+
+        public void Execute(Entity entity, in LocalTransform transform, in #SCRIPTNAME#Element element)
+        {
+            AABB aabb = AABB.FromCenterExtents(transform.Position, element.AABBExtents);
+            Bvh.AddNode(new #SCRIPTNAME#NodeData { Entity = entity }, aabb);
         }
     }
 }
