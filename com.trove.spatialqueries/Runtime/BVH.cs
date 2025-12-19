@@ -487,6 +487,24 @@ namespace Trove.SpatialQueries
 
                 if (indexOfClosestMorton >= 0)
                 {
+                    float3 iteratedNodePos = SortedNodes[queriedNodeIndex].AABB.GetCenter();
+                    float closestDistanceSqSoFar = math.distancesq(position, iteratedNodePos);
+                    
+                    // Find the closest in a range of X from that node
+                    int halfRange = 15;
+                    int startIndex = math.max(0, indexOfClosestMorton - halfRange);
+                    int endIndex = math.min(LeafNodeDatas.Length, indexOfClosestMorton + halfRange);
+                    for (int i = startIndex; i <= endIndex; i++)
+                    {
+                        iteratedNodePos = SortedNodes[i].AABB.GetCenter();
+                        float distanceSq = math.distancesq(position, iteratedNodePos);
+                        if (distanceSq < closestDistanceSqSoFar)
+                        {
+                            indexOfClosestMorton = i;
+                            closestDistanceSqSoFar = distanceSq;
+                        }
+                    }
+                    
                     querier = new NearestNeighborsQuerier
                     {
                         Position = position,
