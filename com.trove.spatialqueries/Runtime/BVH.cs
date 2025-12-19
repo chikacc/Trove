@@ -13,11 +13,11 @@ using UnityEngine.Assertions;
 
 namespace Trove.SpatialQueries
 {
-    public struct BVHNode : IComparable<BVHNode> 
+    public struct BVHNode : IComparable<BVHNode>
     {
         public AABB AABB;
         public int DataIndex; // For leaf nodes this is index of their data, but for hierarchy nodes this is index of their children
-        public uint MortonCode; 
+        public uint MortonCode;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool IsValid()
@@ -28,7 +28,7 @@ namespace Trove.SpatialQueries
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public int CompareTo(BVHNode other)
         {
-            return MortonCode.CompareTo(other.MortonCode) ;
+            return MortonCode.CompareTo(other.MortonCode);
         }
     }
 
@@ -38,50 +38,44 @@ namespace Trove.SpatialQueries
         public int Count;
     }
 
-    internal struct WorkerLoadBalancingData
-    {
-        public int ElementsStartIndex;
-        public int ElementsCount;
-        public uint MinValue;
-        public uint MaxValue;
-    }
-
     public struct BVH<TNodeData> where TNodeData : unmanaged
     {
-        internal NativeList<BVHNode> UnsortedNodes;
-        internal NativeList<BVHNode> SortedNodes;
+        internal NativeList<BVHNode> NodesA; // Nodes A and B are used to ping pong between buffers during sorting
+        internal NativeList<BVHNode> NodesB;
         internal NativeList<TNodeData> LeafNodeDatas;
         internal NativeList<NodeLevelData> NodeLevelDatas;
         internal NativeReference<AABB> SceneAABB;
-        internal NativeList<int> NodesHistogram;
-        internal NativeList<WorkerLoadBalancingData> WorkerLoadBalancingDatas;
+        internal NativeList<int> RadixSortHistograms;
+        
+        internal bool SortedNodesIsA;
+        internal NativeList<BVHNode> SortedNodes => SortedNodesIsA ? NodesA : NodesB;
         
         public static BVH<TNodeData> Create(Allocator allocator, int initialElementsCapacity)
         {
             BVH<TNodeData> bvh = new BVH<TNodeData>();
-            bvh.UnsortedNodes = new NativeList<BVHNode>(
-                BVHUtils.ComputeTotalNodesCountForEntries(initialElementsCapacity), 
+            bvh.NodesA = new NativeList<BVHNode>(
+                BVHUtils.ComputeTotalNodesCountForEntries(initialElementsCapacity),
                 allocator);
-            bvh.SortedNodes = new NativeList<BVHNode>(bvh.UnsortedNodes.Capacity, allocator);
+            bvh.NodesB = new NativeList<BVHNode>(bvh.NodesA.Capacity, allocator);
             bvh.LeafNodeDatas = new NativeList<TNodeData>(initialElementsCapacity, allocator);
             bvh.NodeLevelDatas = new NativeList<NodeLevelData>(32, allocator);
             bvh.SceneAABB = new NativeReference<AABB>(allocator);
-            bvh.NodesHistogram = new NativeList<int>(BVHUtils.NodesHistogramSlicesCount, allocator);
-            bvh.NodesHistogram.Resize(bvh.NodesHistogram.Capacity, NativeArrayOptions.ClearMemory);
-            bvh.WorkerLoadBalancingDatas = new NativeList<WorkerLoadBalancingData>(16, allocator);
+            bvh.RadixSortHistograms = new NativeList<int>(BVHUtils.RadixSortBucketCount, allocator);
+            bvh.RadixSortHistograms.Resize(bvh.RadixSortHistograms.Capacity, NativeArrayOptions.ClearMemory);
+
             return bvh;
         }
 
         public void Dispose(JobHandle jobHandle)
         {
-            if (UnsortedNodes.IsCreated)
+            if (NodesA.IsCreated)
             {
-                UnsortedNodes.Dispose(jobHandle);
+                NodesA.Dispose(jobHandle);
             }
-            
-            if (SortedNodes.IsCreated)
+
+            if (NodesB.IsCreated)
             {
-                SortedNodes.Dispose(jobHandle);
+                NodesB.Dispose(jobHandle);
             }
 
             if (LeafNodeDatas.IsCreated)
@@ -99,24 +93,19 @@ namespace Trove.SpatialQueries
                 SceneAABB.Dispose(jobHandle);
             }
 
-            if (NodesHistogram.IsCreated)
+            if (RadixSortHistograms.IsCreated)
             {
-                NodesHistogram.Dispose(jobHandle);
-            }
-
-            if (WorkerLoadBalancingDatas.IsCreated)
-            {
-                WorkerLoadBalancingDatas.Dispose(jobHandle);
+                RadixSortHistograms.Dispose(jobHandle);
             }
         }
- 
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe void AddNode(in TNodeData nodeData, in AABB aabb)
         {
             ref AABB sceneAABBRef = ref *SceneAABB.GetUnsafePtr();
             sceneAABBRef.Include(aabb);
-            
-            UnsortedNodes.Add(new BVHNode
+
+            NodesA.Add(new BVHNode
             {
                 AABB = aabb,
             });
@@ -125,30 +114,30 @@ namespace Trove.SpatialQueries
 
         public void ReserveAddNodesUnsafe(int addNodesCount, out int startIndexOfReservedRange)
         {
-            startIndexOfReservedRange = UnsortedNodes.Length;
-            UnsortedNodes.Resize(UnsortedNodes.Length + addNodesCount, NativeArrayOptions.UninitializedMemory);
+            startIndexOfReservedRange = NodesA.Length;
+            NodesA.Resize(NodesA.Length + addNodesCount, NativeArrayOptions.UninitializedMemory);
             LeafNodeDatas.Resize(LeafNodeDatas.Length + addNodesCount, NativeArrayOptions.UninitializedMemory);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe void AddNodeUnsafe(in TNodeData nodeData, in AABB aabb, int atIndex)
         {
-            UnsortedNodes[atIndex] = new BVHNode
+            NodesA[atIndex] = new BVHNode
             {
                 AABB = aabb,
             };
             LeafNodeDatas[atIndex] = nodeData;
         }
-            
+
         public void QueryAABB(in AABB aabb, ref UnsafeList<TNodeData> results)
         {
             results.Clear();
-            
+
             if (SortedNodes.Length < 1)
             {
                 return;
             }
-            
+
             QueryAABBRecursive(SortedNodes.Length - 1, aabb, ref results);
         }
 
@@ -166,7 +155,7 @@ namespace Trove.SpatialQueries
                     // Add both child nodes to stack
                     QueryAABBRecursive(queriedNode.DataIndex, aabb, ref results);
                     QueryAABBRecursive(queriedNode.DataIndex + 1, aabb, ref results);
-                } 
+                }
             }
         }
 
@@ -177,11 +166,11 @@ namespace Trove.SpatialQueries
             {
                 return;
             }
-        
+
             // Add root node to stack
             workStack.Clear();
             workStack.Add(SortedNodes.Length - 1);
-        
+
             for (int i = 0; i < workStack.Length; i++)
             {
                 int nodeIndex = workStack[i];
@@ -201,16 +190,16 @@ namespace Trove.SpatialQueries
                 }
             }
         }
-            
+
         public void QueryRay(float3 rayOrigin, float3 rayDirectionNormalized, float rayLength, ref UnsafeList<TNodeData> results)
         {
             results.Clear();
-            
+
             if (SortedNodes.Length < 1)
             {
                 return;
             }
-            
+
             QueryRayRecursive(SortedNodes.Length - 1, rayOrigin, rayDirectionNormalized, rayLength, ref results);
         }
 
@@ -239,8 +228,9 @@ namespace Trove.SpatialQueries
             if (SortedNodes.Length < 1)
             {
                 return;
-            };
-            
+            }
+            ;
+
             // Add root node to stack
             workStack.Clear();
             workStack.Add(SortedNodes.Length - 1);
@@ -271,7 +261,7 @@ namespace Trove.SpatialQueries
             {
                 BVH = this,
             }.Schedule(dep);
-            
+
             return dep;
         }
 
@@ -287,22 +277,22 @@ namespace Trove.SpatialQueries
             dep = new RecomputeSceneAABBsParallelJob
             {
                 WorkerCount = workerCount,
-                UnsortedNodes = UnsortedNodes,
+                UnsortedNodes = NodesA,
                 AABBForWorker = aabbForWorker,
             }.ScheduleParallel(workerCount, 1, dep);
-            
+
             dep = new RecomputeSceneAABBsMergeJob()
             {
                 SceneAABB = SceneAABB,
                 AABBForWorker = aabbForWorker,
             }.Schedule(dep);
-            
+
             aabbForWorker.Dispose(dep);
-            
+
             return dep;
         }
 
-        public JobHandle ScheduleBuildJobs(bool useParallelSort, bool useParallelBuild, JobHandle dep)
+        public JobHandle ScheduleBuildJobs(bool parallel, JobHandle dep)
         {
             int workerCount = JobsUtility.JobWorkerCount;
 
@@ -310,52 +300,62 @@ namespace Trove.SpatialQueries
             {
                 WorkerCount = workerCount,
                 SceneAABB = SceneAABB,
-                UnsortedNodes = UnsortedNodes,
+                UnsortedNodes = NodesA,
             }.ScheduleParallel(workerCount, 1, dep);
-            
-            if(useParallelSort)
+
+            if (parallel)
             {
-                dep = new BVHInitializeSortJob
+                // Radix sort by bytes of the morton code (4 bytes = 4 passes)
+                for (int pass = 0; pass < BVHUtils.RadixSortPasses; pass++)
                 {
-                    WorkerCount = workerCount,
-                    UnsortedNodes = UnsortedNodes,
-                    SortedNodes = SortedNodes,
-                    NodesHistogram = NodesHistogram,
-                    WorkerLoadBalancingData = WorkerLoadBalancingDatas,
-                }.Schedule(dep);
-                
-                dep = new BVHComputeNodesHistogramJob
-                {
-                    WorkerCount = workerCount,
-                    UnsortedNodes = UnsortedNodes,
-                    NodesHistogram = NodesHistogram,
-                }.ScheduleParallel(workerCount, 1, dep);
-                
-                dep = new BVHMergeHistogramsAndComputeLoadBalancingJob
-                {
-                    WorkerCount = workerCount,
-                    UnsortedNodes = UnsortedNodes,
-                    NodesHistogram = NodesHistogram,
-                    WorkerLoadBalancingData = WorkerLoadBalancingDatas,
-                }.Schedule(dep);
-                
-                dep = new BVHParallelSortJob()
-                {
-                    UnsortedNodes = UnsortedNodes,
-                    SortedNodes = SortedNodes,
-                    WorkerLoadBalancingData = WorkerLoadBalancingDatas,
-                }.ScheduleParallel(workerCount, 1, dep);
+                    bool isEvenPass = pass % 2 == 0;
+                    NativeList<BVHNode> inputNodes = isEvenPass ? NodesA : NodesB;
+                    NativeList<BVHNode> outputNodes = isEvenPass ? NodesB : NodesA;
+                    SortedNodesIsA = isEvenPass ? false : true;
+
+                    dep = new BVHInitRadixSortInitializePassJob
+                    {
+                        WorkerCount = workerCount,
+                        InputNodes = inputNodes,
+                        OutputNodes = outputNodes,
+                        RadixSortHistograms = RadixSortHistograms,
+                    }.Schedule(dep);
+
+                    dep = new BVHRadixSortComputeBucketHistogramJob
+                    {
+                        WorkerCount = workerCount,
+                        Pass = pass,
+                        Nodes = inputNodes,
+                        RadixSortHistograms = RadixSortHistograms,
+                    }.ScheduleParallel(workerCount, 1, dep);
+
+                    dep = new BVHRadixSortComputeBucketIndexRangesJob
+                    {
+                        WorkerCount = workerCount,
+                        RadixSortHistograms = RadixSortHistograms,
+                    }.Schedule(dep);
+
+                    dep = new BVHRadixScatterJob
+                    {
+                        WorkerCount = workerCount,
+                        Pass = pass,
+                        InputNodes = inputNodes,
+                        OutputNodes = outputNodes,
+                        RadixHistograms = RadixSortHistograms,
+                    }.ScheduleParallel(workerCount, 1, dep);
+                }
             }
             else
             {
                 dep = new BVHSingleSortJob
                 {
-                    UnsortedNodes = UnsortedNodes,
-                    SortedNodes = SortedNodes,
+                    UnsortedNodes = NodesA,
                 }.Schedule(dep);
+
+                SortedNodesIsA = true;
             }
 
-            if (useParallelBuild)
+            if (parallel)
             {
                 dep = new BVHPrecomputeHierarchyJob
                 {
@@ -400,17 +400,17 @@ namespace Trove.SpatialQueries
             nodes = (*SortedNodes.GetUnsafeList());
             nodeLevelStartIndexesAndCounts = (*NodeLevelDatas.GetUnsafeList());
         }
-    
+
         [BurstCompile]
         public struct BVHClearJob : IJob
         {
             public BVH<TNodeData> BVH;
-        
+
             public void Execute()
             {
-                BVH.UnsortedNodes.Clear();
-                BVH.SortedNodes.Clear();
+                BVH.NodesA.Clear();
                 BVH.LeafNodeDatas.Clear();
+                BVH.NodesB.Clear();
                 BVH.NodeLevelDatas.Clear();
                 BVH.SceneAABB.Value = AABB.GetEmpty();
             }
@@ -419,9 +419,10 @@ namespace Trove.SpatialQueries
 
     internal static class BVHUtils
     {
-        internal const int NodesHistogramSlicesCount = 4000;
-        internal const uint ValuesPerNodeHistogramSlice = uint.MaxValue / NodesHistogramSlicesCount;
-        
+        internal const int RadixBits = 8;
+        internal const int RadixSortBucketCount = 1 << RadixBits; // 256 values of a byte
+        internal const int RadixSortPasses = 4; // 4 bytes of the morton uint
+
         internal static int ComputeTotalNodesCountForEntries(int entriesCount)
         {
             // Make entries count even
@@ -429,18 +430,18 @@ namespace Trove.SpatialQueries
             {
                 entriesCount++;
             }
-            
+
             float entriesCountFloat = (float)entriesCount;
-            
+
             while (entriesCountFloat > 1f)
             {
                 entriesCountFloat *= 0.5f;
                 entriesCount += (int)math.ceil(entriesCountFloat);
             }
-            
+
             return entriesCount;
         }
-        
+
         /// <summary>
         /// https://developer.nvidia.com/blog/thinking-parallel-part-iii-tree-construction-gpu/
         ///
@@ -453,7 +454,7 @@ namespace Trove.SpatialQueries
             // 1023 as a uint in binary is 1111111111, which is 10 bits. Later this will allow us to store the 3
             // position coords as interleaved shifted bits in a 32 bit uint.
             nPos = math.min(math.max(nPos * 1024.0f, 0.0f), 1023.0f);
-            
+
             // By casting the 0-to-1023 number to uint, we get 10 significant  bits to work with. (1023 in binary
             // is 1111111111). We then "expand" the bits of each value to make space for bit interleaving. 
             uint expandedX = ExpandBits((uint)nPos.x);
@@ -464,7 +465,7 @@ namespace Trove.SpatialQueries
             // by two spaces, and multiplying by 2 shifts by one space.
             return (expandedX * 4) + (expandedY * 2) + expandedZ;
         }
-        
+
         /// <summary>
         /// https://developer.nvidia.com/blog/thinking-parallel-part-iii-tree-construction-gpu/
         ///
@@ -492,7 +493,7 @@ namespace Trove.SpatialQueries
         public NativeList<BVHNode> UnsortedNodes;
         [NativeDisableParallelForRestriction]
         public NativeArray<AABB> AABBForWorker;
-        
+
         public void Execute(int workerIndex)
         {
             int nodesPerWorker = MathUtilities.DivideIntCeil(UnsortedNodes.Length, WorkerCount);
@@ -500,7 +501,7 @@ namespace Trove.SpatialQueries
             int endIndex = math.min(UnsortedNodes.Length, startIndex + nodesPerWorker);
 
             ref AABB aabbForWorker = ref UnsafeUtility.ArrayElementAsRef<AABB>(AABBForWorker.GetUnsafePtr(), workerIndex);
-            
+
             for (int i = startIndex; i < endIndex; i++)
             {
                 aabbForWorker.Include(UnsortedNodes[i].AABB);
@@ -513,11 +514,11 @@ namespace Trove.SpatialQueries
     {
         public NativeReference<AABB> SceneAABB;
         public NativeArray<AABB> AABBForWorker;
-        
+
         public void Execute()
         {
             ref AABB sceneAABBRef = ref *SceneAABB.GetUnsafePtr();
-            
+
             for (int i = 0; i < AABBForWorker.Length; i++)
             {
                 sceneAABBRef.Include(AABBForWorker[i]);
@@ -533,13 +534,13 @@ namespace Trove.SpatialQueries
         public NativeReference<AABB> SceneAABB;
         [NativeDisableParallelForRestriction]
         public NativeList<BVHNode> UnsortedNodes;
-        
+
         public void Execute(int index)
         {
             int nodesPerWorker = MathUtilities.DivideIntCeil(UnsortedNodes.Length, WorkerCount);
             int startIndex = index * nodesPerWorker;
             int endIndex = math.min(UnsortedNodes.Length, startIndex + nodesPerWorker);
-            
+
             // Compute morton codes (from normalized position relative to scene AABB)
             AABB sceneAABB = SceneAABB.Value;
             float3 sceneDimensions = sceneAABB.Max - sceneAABB.Min;
@@ -555,189 +556,159 @@ namespace Trove.SpatialQueries
     }
 
     [BurstCompile]
-    internal struct BVHInitializeSortJob : IJob
+    public struct BVHSingleSortJob : IJob
     {
-        public int WorkerCount;
         public NativeList<BVHNode> UnsortedNodes;
-        public NativeList<BVHNode> SortedNodes;
-        public NativeList<int> NodesHistogram;
-        public NativeList<WorkerLoadBalancingData> WorkerLoadBalancingData;
 
         public void Execute()
         {
-            // Ensure sorted nodes length
-            if (SortedNodes.Length != UnsortedNodes.Length)
-            {
-                SortedNodes.Resize(UnsortedNodes.Length, NativeArrayOptions.UninitializedMemory);
-            }
+            UnsortedNodes.Sort();
+        }
+    }
 
-            // Ensure histogram length
-            if (NodesHistogram.Length != BVHUtils.NodesHistogramSlicesCount * WorkerCount)
+    [BurstCompile]
+    internal struct BVHInitRadixSortInitializePassJob : IJob
+    {
+        public int WorkerCount;
+        public NativeList<BVHNode> InputNodes;
+        public NativeList<BVHNode> OutputNodes;
+        public NativeList<int> RadixSortHistograms;
+
+        public void Execute()
+        {
+            // Ensure output buffer length
+            if (OutputNodes.Length != InputNodes.Length)
             {
-                NodesHistogram.Resize(BVHUtils.NodesHistogramSlicesCount * WorkerCount, NativeArrayOptions.ClearMemory);
+                OutputNodes.Resize(InputNodes.Length, NativeArrayOptions.UninitializedMemory);
             }
             
             // Clear histogram
-            for (int i = 0; i < NodesHistogram.Length; i++)
+            RadixSortHistograms.Resize(BVHUtils.RadixSortBucketCount * WorkerCount, NativeArrayOptions.ClearMemory);
+            for (int i = 0; i < RadixSortHistograms.Length; i++)
             {
-                NodesHistogram[i] = 0;
+                RadixSortHistograms[i] = 0;
             }
-            
-            // Clear worker slice ranges
-            WorkerLoadBalancingData.Clear();
         }
     }
 
     [BurstCompile]
-    internal unsafe struct BVHComputeNodesHistogramJob : IJobFor
+    internal unsafe struct BVHRadixSortComputeBucketHistogramJob : IJobFor
     {
         public int WorkerCount;
+        public int Pass;
         [ReadOnly]
-        public NativeList<BVHNode> UnsortedNodes;
+        public NativeList<BVHNode> Nodes;
         [NativeDisableParallelForRestriction]
-        public NativeList<int> NodesHistogram;
+        public NativeList<int> RadixSortHistograms;
 
         public void Execute(int workerIndex)
         {
-            int nodesPerWorker = MathUtilities.DivideIntCeil(UnsortedNodes.Length, WorkerCount);
-            int startIndex = workerIndex * nodesPerWorker;
-            int endIndex = math.min(UnsortedNodes.Length, startIndex + nodesPerWorker);
+            if (Nodes.Length == 0)
+                return;
 
-            int* nodesHistogramPtrForWorker = NodesHistogram.GetUnsafePtr() + (long)(BVHUtils.NodesHistogramSlicesCount * workerIndex);
-            
-            // For each node in this worker's range, 
+            int nodesPerWorker = MathUtilities.DivideIntCeil(Nodes.Length, WorkerCount);
+            int startIndex = workerIndex * nodesPerWorker;
+            int endIndex = math.min(Nodes.Length, startIndex + nodesPerWorker);
+
+            int* histogramPtrForWorker = RadixSortHistograms.GetUnsafePtr() + (long)(workerIndex * BVHUtils.RadixSortBucketCount);
+
+            // Calculate nb of occurrences for the value of each bucket (each worker responsible for a range of nodes)
+            int bitShiftForPass = Pass * BVHUtils.RadixBits;
             for (int i = startIndex; i < endIndex; i++)
             {
-                uint mortonCode = UnsortedNodes[i].MortonCode;
-                int histogramSliceIndex = (int)(mortonCode / BVHUtils.ValuesPerNodeHistogramSlice);
-                ref int histogramValRef = ref UnsafeUtility.ArrayElementAsRef<int>(nodesHistogramPtrForWorker, histogramSliceIndex);
-                histogramValRef++;
+                uint mortonCode = Nodes[i].MortonCode;
+                int bucketIndex = (int)((mortonCode >> bitShiftForPass) & (BVHUtils.RadixSortBucketCount - 1));
+                histogramPtrForWorker[bucketIndex]++;
             }
         }
     }
 
     [BurstCompile]
-    internal unsafe struct BVHMergeHistogramsAndComputeLoadBalancingJob : IJob
+    internal unsafe struct BVHRadixSortComputeBucketIndexRangesJob : IJob
     {
         public int WorkerCount;
-        public NativeList<BVHNode> UnsortedNodes;
-        public NativeList<int> NodesHistogram;
-        public NativeList<WorkerLoadBalancingData> WorkerLoadBalancingData;
+        public NativeList<int> RadixSortHistograms;
 
         public void Execute()
         {
-            if (UnsortedNodes.Length < 1)
-                return;
+            int* histogramsPtr = RadixSortHistograms.GetUnsafePtr();
             
-            int* nodesHistogramPtr = NodesHistogram.GetUnsafePtr();
-            
-            // Merge all into the first worker's range
-            for (int sliceIndex = 0; sliceIndex < BVHUtils.NodesHistogramSlicesCount; sliceIndex++)
+            int* bucketValueCounts = stackalloc int[BVHUtils.RadixSortBucketCount];
+            int* bucketNodeStartIndexes = stackalloc int[BVHUtils.RadixSortBucketCount];
+
+            // Compute histogram totals across all workers
+            for (int bucketIndex = 0; bucketIndex < BVHUtils.RadixSortBucketCount; bucketIndex++)
             {
-                ref int firstWorkerHistogramValRef =
-                    ref UnsafeUtility.ArrayElementAsRef<int>(nodesHistogramPtr, sliceIndex);
-                for (int workerIndex = 1; workerIndex < WorkerCount; workerIndex++)
+                int total = 0;
+                for (int worker = 0; worker < WorkerCount; worker++)
                 {
-                    firstWorkerHistogramValRef +=
-                        NodesHistogram[(workerIndex * BVHUtils.NodesHistogramSlicesCount) + sliceIndex];
+                    total += histogramsPtr[(worker * BVHUtils.RadixSortBucketCount) + bucketIndex];
                 }
+                bucketValueCounts[bucketIndex] = total;
             }
 
-            // Compute load balancing
-            // Assign a slices range to each worker so that each worker has a similar quantity of nodes to process
-            int totalElementsCounter = 0;
-            int desiredElementsPerWorker = MathUtilities.DivideIntCeil(UnsortedNodes.Length, WorkerCount);
-            WorkerLoadBalancingData tmpLoadBalancingData = new WorkerLoadBalancingData();
-            for (int i = 0; i < BVHUtils.NodesHistogramSlicesCount; i++)
+            // Compute the nodes start index for each bucket
+            int indexCounter = 0;
+            for (int bucketIndex = 0; bucketIndex < BVHUtils.RadixSortBucketCount; bucketIndex++)
             {
-                bool isLastSlice = i >= BVHUtils.NodesHistogramSlicesCount - 1;
-                
-                // At last slice, max value is uint max value (otherwise we may get overflow because uint maxvalue isn't perfectly dividable by nb slices)
-                if (isLastSlice)
-                {
-                    tmpLoadBalancingData.MaxValue = uint.MaxValue;
-                }
-                else
-                {
-                    tmpLoadBalancingData.MaxValue += BVHUtils.ValuesPerNodeHistogramSlice;
-                }
+                bucketNodeStartIndexes[bucketIndex] = indexCounter;
+                indexCounter += bucketValueCounts[bucketIndex];
+            }
 
-                tmpLoadBalancingData.ElementsCount += NodesHistogram[i];
-                totalElementsCounter += NodesHistogram[i];
-                
-                if (tmpLoadBalancingData.ElementsCount >= desiredElementsPerWorker ||
-                    isLastSlice)
+            // Store the nodes start index of each bucket for each worker in the histogram.
+            // This will allow each worker to sort their respective range of nodes and store elements in all buckets.
+            for (int bucketIndex = 0; bucketIndex < BVHUtils.RadixSortBucketCount; bucketIndex++)
+            {
+                int bucketNodesStartIndex = bucketNodeStartIndexes[bucketIndex];
+                for (int workerIndex = 0; workerIndex < WorkerCount; workerIndex++)
                 {
-                    uint addedMaxValue = tmpLoadBalancingData.MaxValue;
-                    WorkerLoadBalancingData.Add(tmpLoadBalancingData);
-                    
-                    tmpLoadBalancingData = new WorkerLoadBalancingData
-                    {
-                        ElementsStartIndex = totalElementsCounter,
-                        ElementsCount = 0,
-                        MinValue = addedMaxValue,
-                        MaxValue = addedMaxValue,
-                    };
+                    int bucketElementsCountForWorker = histogramsPtr[(workerIndex * BVHUtils.RadixSortBucketCount) + bucketIndex];
+                    histogramsPtr[(workerIndex * BVHUtils.RadixSortBucketCount) + bucketIndex] = bucketNodesStartIndex;
+                    bucketNodesStartIndex += bucketElementsCountForWorker;
                 }
             }
         }
     }
 
     [BurstCompile]
-    internal unsafe struct BVHParallelSortJob : IJobFor
+    internal unsafe struct BVHRadixScatterJob : IJobFor
     {
+        public int WorkerCount;
+        public int Pass;
         [ReadOnly]
-        public NativeList<BVHNode> UnsortedNodes;
+        public NativeList<BVHNode> InputNodes;
         [NativeDisableParallelForRestriction]
-        public NativeList<BVHNode> SortedNodes;
-        [ReadOnly]
-        public NativeList<WorkerLoadBalancingData> WorkerLoadBalancingData;
+        public NativeList<BVHNode> OutputNodes;
+        [NativeDisableParallelForRestriction]
+        public NativeList<int> RadixHistograms;
 
         public void Execute(int workerIndex)
         {
-            if (workerIndex < WorkerLoadBalancingData.Length)
+            if (InputNodes.Length == 0)
+                return;
+
+            BVHNode* outputNodesPtr = OutputNodes.GetUnsafePtr();
+            
+            int nodesPerWorker = MathUtilities.DivideIntCeil(InputNodes.Length, WorkerCount);
+            int startIndex = workerIndex * nodesPerWorker;
+            int endIndex = math.min(InputNodes.Length, startIndex + nodesPerWorker);
+
+            int bitShiftForPass = Pass * BVHUtils.RadixBits;
+            int* histogramPtrForWorker = RadixHistograms.GetUnsafePtr() + (workerIndex * BVHUtils.RadixSortBucketCount);
+
+            // Store a local copy of node start indexes for this worker
+            int* nodeStartIndexesForBucket = stackalloc int[BVHUtils.RadixSortBucketCount];
+            UnsafeUtility.MemCpy(nodeStartIndexesForBucket, histogramPtrForWorker, BVHUtils.RadixSortBucketCount * sizeof(int));
+
+            // For this worker's range of nodes, perform the radix sort pass
+            for (int i = startIndex; i < endIndex; i++)
             {
-                WorkerLoadBalancingData loadBalancingData = WorkerLoadBalancingData[workerIndex];
-
-                // First pass; group nodes by value range contiguously in sorted array
-                int addedCounter = 0;
-                for (int i = 0; i < UnsortedNodes.Length; i++)
-                {
-                    BVHNode node = UnsortedNodes[i];
-                    if (node.MortonCode >= loadBalancingData.MinValue && node.MortonCode < loadBalancingData.MaxValue)
-                    {
-                        SortedNodes[loadBalancingData.ElementsStartIndex + addedCounter] = node;
-                        addedCounter++;
-                    }
-                }
-
-                // Second pass; sort grouped nodes of value range
-                UnsafeList<BVHNode> sortingNodes = new UnsafeList<BVHNode>(
-                    SortedNodes.GetUnsafePtr() + (long)loadBalancingData.ElementsStartIndex,
-                    loadBalancingData.ElementsCount);
-                sortingNodes.Sort();
+                BVHNode node = InputNodes[i];
+                uint mortonCode = node.MortonCode;
+                int bucketIndex = (int)((mortonCode >> bitShiftForPass) & (BVHUtils.RadixSortBucketCount - 1));
+                int writeIndex = nodeStartIndexesForBucket[bucketIndex]++;
+                outputNodesPtr[writeIndex] = node;
             }
-        }
-    }
-
-    [BurstCompile]
-    public unsafe struct BVHSingleSortJob : IJob
-    {
-        public NativeList<BVHNode> UnsortedNodes;
-        public NativeList<BVHNode> SortedNodes;
-
-        public void Execute()
-        {
-            if (SortedNodes.Length != UnsortedNodes.Length)
-            {
-                SortedNodes.Resize(UnsortedNodes.Length, NativeArrayOptions.ClearMemory);
-            } 
-            
-            // TODO: bad
-            SortedNodes.CopyFrom(UnsortedNodes);
-            
-            // Sort
-            SortedNodes.Sort();
         }
     }
 
@@ -751,7 +722,7 @@ namespace Trove.SpatialQueries
         public void Execute()
         {
             NodeLevelDatas.Clear();
-            
+
             if (SortedNodes.Length < 2)
             {
                 if (SortedNodes.Length > 0)
@@ -765,9 +736,9 @@ namespace Trove.SpatialQueries
 
                 return;
             }
-            
+
             UnsafeList<int> paddingNodeIndices = new UnsafeList<int>(64, Allocator.Temp);
-            
+
             // If nodes count is not even, add padding node
             if (SortedNodes.Length % 2 != 0)
             {
@@ -778,7 +749,7 @@ namespace Trove.SpatialQueries
                     AABB = AABB.GetEmpty(),
                 });
             }
-            
+
             NodeLevelDatas.Add(new NodeLevelData
             {
                 StartIndex = 0,
@@ -791,14 +762,14 @@ namespace Trove.SpatialQueries
             while (workingLengthForLevel > 1)
             {
                 workingLengthForLevel /= 2; // ok because we always ensure our workinglength is dividable by 2
-                
+
                 // Ensure our workinglength is dividable by 2
                 if (workingLengthForLevel > 1 && workingLengthForLevel % 2 != 0)
                 {
                     paddingNodeIndices.AddWithGrowFactor(startIndexCounter + workingLengthForLevel);
                     workingLengthForLevel++;
                 }
-                
+
                 NodeLevelDatas.Add(new NodeLevelData
                 {
                     StartIndex = startIndexCounter,
@@ -808,7 +779,7 @@ namespace Trove.SpatialQueries
                 startIndexCounter += workingLengthForLevel;
 
             }
-            
+
             // Resize nodes for full hierarchy
             SortedNodes.Resize(startIndexCounter, NativeArrayOptions.UninitializedMemory);
 
@@ -834,15 +805,15 @@ namespace Trove.SpatialQueries
         public NativeList<BVHNode> SortedNodes;
         [ReadOnly]
         public NativeList<NodeLevelData> NodeLevelDatas;
-        
+
         public void Execute(int workerIndex)
         {
-            if(SortedNodes.Length < 2)
+            if (SortedNodes.Length < 2)
                 return;
 
             int currentLevel = 0;
             NodeLevelData nodeLevelData = NodeLevelDatas[currentLevel];
-            
+
             // We need each worker to start with a nodes count that is a power of 2, so that we'll have a guarantee
             // that there's an even amount of nodes to process at each level of the hierarchy other than the last
             int nodesLength = MathUtilities.DivideIntCeil(nodeLevelData.Count, WorkerCount);
@@ -852,9 +823,9 @@ namespace Trove.SpatialQueries
             if (nodesStart >= nodeLevelData.StartIndex + nodeLevelData.Count)
                 return;
 
-            int nodesEnd =  math.min(nodeLevelData.StartIndex + nodeLevelData.Count, nodesStart + nodesLength);
+            int nodesEnd = math.min(nodeLevelData.StartIndex + nodeLevelData.Count, nodesStart + nodesLength);
             int nextLevelAddIndex = NodeLevelDatas[currentLevel + 1].StartIndex + (workerIndex * nodesLength / 2);
-            
+
             // For each level
             while (nodesLength >= 2)
             {
@@ -872,7 +843,7 @@ namespace Trove.SpatialQueries
 
                     nextLevelAddIndex++;
                 }
-                
+
                 // Process last pair which might have exceptions
                 {
                     int lastPairIndex = nodesEnd - 2;
@@ -901,7 +872,7 @@ namespace Trove.SpatialQueries
                     nextLevelAddIndex = NodeLevelDatas[currentLevel + 1].StartIndex + (workerIndex * nodesLength / 2);
                 }
             }
-            
+
             if (workerIndex == 0)
             {
                 ParallelWorkersLastWrittenLevel.Value = currentLevel;
@@ -918,9 +889,9 @@ namespace Trove.SpatialQueries
 
         public void Execute()
         {
-            if(SortedNodes.Length < 2)
+            if (SortedNodes.Length < 2)
                 return;
-            
+
             // Process the last few levels after all parallel workers ended on their last two top-level nodes
             int nextLevelAddIndex = 0;
             for (int levelIndex = ParallelWorkersLastWrittenLevel.Value; levelIndex < NodeLevelDatas.Length - 1; levelIndex++)
@@ -929,12 +900,12 @@ namespace Trove.SpatialQueries
                 nextLevelAddIndex = NodeLevelDatas[levelIndex + 1].StartIndex;
 
                 int nodesEnd = nodeLevelData.StartIndex + nodeLevelData.Count;
-                
+
                 for (int i = nodeLevelData.StartIndex; i < nodesEnd - 2; i += 2)
                 {
                     AABB aabb = SortedNodes[i].AABB;
                     aabb.Include(SortedNodes[i + 1].AABB);
-                    
+
                     SortedNodes[nextLevelAddIndex] = new BVHNode
                     {
                         AABB = aabb,
@@ -943,7 +914,7 @@ namespace Trove.SpatialQueries
 
                     nextLevelAddIndex++;
                 }
-                
+
                 // Process last pair which might have exceptions
                 {
                     int lastPairIndex = nodesEnd - 2;
@@ -969,14 +940,14 @@ namespace Trove.SpatialQueries
     {
         public NativeList<BVHNode> SortedNodes;
         public NativeList<NodeLevelData> NodeLevelDatas;
-        
+
         public void Execute()
         {
-            if(SortedNodes.Length < 2)
+            if (SortedNodes.Length < 2)
                 return;
-            
+
             NodeLevelDatas.Clear();
-            
+
             // If nodes count is not even, add padding node
             if (SortedNodes.Length % 2 != 0)
             {
@@ -986,7 +957,7 @@ namespace Trove.SpatialQueries
                     AABB = SortedNodes[SortedNodes.Length - 1].AABB,
                 });
             }
-            
+
             // Build node hierarchy
             int nodesStartForLevel = 0;
             int nodesCountForLevel = SortedNodes.Length;
@@ -997,9 +968,9 @@ namespace Trove.SpatialQueries
                     StartIndex = nodesStartForLevel,
                     Count = nodesCountForLevel,
                 });
-                
+
                 int nodesLengthBeforeAdd = SortedNodes.Length;
-                
+
                 for (int i = nodesStartForLevel; i < nodesLengthBeforeAdd; i += 2)
                 {
                     AABB aabb = SortedNodes[i].AABB;
@@ -1011,10 +982,10 @@ namespace Trove.SpatialQueries
                         DataIndex = i,
                     });
                 }
-            
+
                 nodesStartForLevel = nodesLengthBeforeAdd;
                 nodesCountForLevel = SortedNodes.Length - nodesLengthBeforeAdd;
-                
+
                 // If nodes count is not even amd is not root node, add padding node
                 if (nodesCountForLevel > 1 && nodesCountForLevel % 2 != 0)
                 {
@@ -1026,7 +997,7 @@ namespace Trove.SpatialQueries
                     nodesCountForLevel += 1;
                 }
             }
-            
+
             // Add final level
             NodeLevelDatas.Add(new NodeLevelData
             {

@@ -115,7 +115,7 @@ partial struct SpatialQueryTesterSystem : ISystem
                 }.Schedule(state.Dependency);
             }
 
-            state.Dependency = _bvh.ScheduleBuildJobs(tester.UseParallelSort, tester.UseParallelBuild, state.Dependency);
+            state.Dependency = _bvh.ScheduleBuildJobs(tester.UseParallelBuild, state.Dependency);
 
             // ---------------------------------------------------------------
             

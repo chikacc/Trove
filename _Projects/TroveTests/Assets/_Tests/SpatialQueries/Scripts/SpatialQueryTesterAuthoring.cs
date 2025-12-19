@@ -2,6 +2,7 @@ using Unity.Entities;
 using UnityEngine;
 using Trove.SpatialQueries;
 using Unity.Mathematics;
+using UnityEngine.Serialization;
 using AABB = Trove.AABB;
 
 public struct SpatialQueryTester : IComponentData
@@ -12,14 +13,12 @@ public struct SpatialQueryTester : IComponentData
     public Entity PhysicsCubePrefab;
 
     public bool UseParallelAdd;
-    public bool UseParallelSort;
     public bool UseParallelBuild;
 
     public int SpawnCount;
     public AABB SpawnArea;
     public float SpawnScale;
     
-    public float QuerierRatio;
     public float QueryScale;
 
     public bool IsInitialized;
@@ -32,8 +31,7 @@ class SpatialQueryTesterAuthoring : MonoBehaviour
     public GameObject BVHCubePrefab;
     public GameObject PhysicsCubePrefab;
 
-    public bool UseParallelAdd;
-    public bool UseParallelSort;
+    public bool UseParallelAdd; 
     public bool UseParallelBuild;
     
     public int SpawnCount = 100;
@@ -41,7 +39,6 @@ class SpatialQueryTesterAuthoring : MonoBehaviour
     public float3 SpawnAreaCenter = float3.zero;
     public float3 SpawnAreaExtents = new float3(50f);
 
-    public float QuerierRatio = 1f;
     public float QueryScale = 4f;
 }
 
@@ -58,10 +55,8 @@ class SpatialQueryTesterAuthoringBaker : Baker<SpatialQueryTesterAuthoring>
             PhysicsCubePrefab = GetEntity(authoring.PhysicsCubePrefab, TransformUsageFlags.None),
             
             UseParallelAdd = authoring.UseParallelAdd,
-            UseParallelSort = authoring.UseParallelSort,
             UseParallelBuild = authoring.UseParallelBuild,
             
-            QuerierRatio = authoring.QuerierRatio,
             QueryScale = authoring.QueryScale,
             
             SpawnCount = authoring.SpawnCount,
