@@ -222,6 +222,53 @@ partial struct SpatialQueryTesterSystem : ISystem
                         }
                     }
                 }
+                
+                if (debugger.DebugNearestNeighbours)
+                {
+                    ComponentLookup<LocalTransform> localTransformLookup = SystemAPI.GetComponentLookup<LocalTransform>(true);
+                    ComponentLookup<BVHTestObject> bvhTestObjectLookup = SystemAPI.GetComponentLookup<BVHTestObject>(true);
+
+                    if (_bvh.CreateNearestNeighborsQuerier(debugger.QueryPosition,
+                            out BVH<TestNodeData>.NearestNeighborsQuerier nearestNeighborsQuerier))
+                    {
+                        UnsafeList<BVH<TestNodeData>.NearestNeighborResult> queryResults = new UnsafeList<BVH<TestNodeData>.NearestNeighborResult>(32, Allocator.Temp);
+
+                        int counter = 0;
+                        while (counter <= debugger.NearestNeighboursDebugLevel)
+                        {
+                            nearestNeighborsQuerier.NextResultsBatch(in _bvh, ref queryResults, true);
+                            counter++;
+
+                        }
+                    
+                        // Draw query results
+                        for (int i = 0; i < queryResults.Length; i++)
+                        {
+                            Entity resultEntity = queryResults[i].Data.Entity;
+                            if (localTransformLookup.TryGetComponent(resultEntity, out LocalTransform resultTransform) &&
+                                bvhTestObjectLookup.TryGetComponent(resultEntity, out BVHTestObject resultBVHTestObject))
+                            {
+                                _debugDrawGroup.DrawWireBox(
+                                    resultTransform.Position, 
+                                    quaternion.identity,
+                                    resultTransform.Scale * resultBVHTestObject.AABBExtents, 
+                                    UnityEngine.Color.red);
+                            }
+                        }
+                        
+                        // Draw actual closest
+                        if (queryResults.Length > 0 &&
+                            localTransformLookup.TryGetComponent(queryResults[0].Data.Entity, out LocalTransform closestTransform) &&
+                            bvhTestObjectLookup.TryGetComponent(queryResults[0].Data.Entity, out BVHTestObject closestBVHTestObject))
+                        {
+                            _debugDrawGroup.DrawWireBox(
+                                closestTransform.Position, 
+                                quaternion.identity,
+                                closestTransform.Scale * closestBVHTestObject.AABBExtents, 
+                                UnityEngine.Color.yellow);
+                        }
+                    }
+                }
             }
         }
     }

@@ -29,7 +29,7 @@ Look at the comments in the template for further info.
 
 To query the BVH:
 * Get the BVH from its singleton entity (created in the BVH template)
-* Make queries with the query methods (ex: `BVH.QueryAABB();`, `BVH.QueryRay();`)
+* Make queries with the query methods (ex: `BVH.QueryAABB()`, `BVH.QueryRay()`, `BVH.QuerySphere()`)
 
 he following code is an example of a `IJobEntity` that makes BVH queries:
 
@@ -59,6 +59,76 @@ public partial struct QueryBVHJob : IJobEntity, IJobEntityChunkBeginEnd
         if (!results.IsCreated)
         {
             results = new UnsafeList<MyBVHNodeData>(32, Allocator.Temp);
+        }
+        
+        return true;
+    }
+
+    public void OnChunkEnd(in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask,
+        bool chunkWasExecuted)
+    {
+    }
+}
+```
+
+### Querying nearest neighbors
+
+You can also query nearest neighbors very efficiently, using a `BVH<MyBVHMyBVHNodeData>NearestNeighborsQuerier`. This is a struct that allows you to iteratively query a group of close results, and expand the search at every iteration. The first iteration is guaranteed to give you at least one result.
+
+This code sample demonstrates its usage in a job:
+```cs
+[BurstCompile]
+public partial struct NearestNeighborsJob : IJobEntity
+{
+    // We use the BVH for queries, so it can be ReadOnly
+    [ReadOnly]
+    public BVH<MyBVHNodeData> BVH;
+    
+    // We cache a private list of results here, reusable throughout entity iteration.
+    // This way we don't have to constantly re-allocate it.
+    private UnsafeList<BVH<MyBVHNodeData>.NearestNeighborResult> results;
+    
+    public void Execute(in LocalTransform transform, ref MyQuerier querier)
+    {
+        if (_bvh.CreateNearestNeighborsQuerier(transform.Position, out BVH<MyBVHNodeData>.NearestNeighborsQuerier nearestNeighborsQuerier))
+        {
+            // Find the absolute closest neighbor like this:
+            if(nearestNeighborsQuerier.NextResultsBatch(in _bvh, ref queryResults, true))
+            {
+                Debug.Log($"The closest result is {queryResults[0].Data.Entity.Index} at distance {queryResults[0].Distance}");
+            }
+            
+            // Iterate closest neighbors until we find one that meets a condition like this:
+            bool conditionMet = false;
+            float maxDistance = 100f;
+            while(!conditionMet && nearestNeighborsQuerier.NextResultsBatch(in _bvh, ref queryResults, true))
+            {
+                for (int i = 0; i < queryResults.Length; i++)
+                {
+                    var result = queryResults[i];
+                    if(result.Distance > maxDistance)
+                    {
+                        // We exit as soon as max distance is reached (because results are sorted by distance)
+                        conditionMet = true;
+                        break;
+                    }
+                    else if(ConditionIsMet(result))
+                    {
+                        Debug.Log($"{queryResults[0].Data.Entity.Index} is the closest entity that met the condition");
+                        conditionMet = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    public bool OnChunkBegin(in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
+    {
+        // We create the results list only once per thread, and check for creation only once per chunk
+        if (!results.IsCreated)
+        {
+            results = new UnsafeList<BVH<MyBVHNodeData>.NearestNeighborResult>(32, Allocator.Temp);
         }
         
         return true;

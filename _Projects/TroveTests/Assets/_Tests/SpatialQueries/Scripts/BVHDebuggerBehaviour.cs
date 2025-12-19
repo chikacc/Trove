@@ -15,6 +15,9 @@ public struct BVHDebugger : IComponentData
     
     public bool DebugBoundingBoxes;
     public int BoundingBoxDebugLevel;
+    
+    public bool DebugNearestNeighbours;
+    public int NearestNeighboursDebugLevel;
 }
 
 class BVHDebuggerBehaviour : MonoBehaviour
@@ -28,6 +31,9 @@ class BVHDebuggerBehaviour : MonoBehaviour
     
     public bool DebugBoundingBoxes;
     public int BoundingBoxDebugLevel;
+    
+    public bool DebugNearestNeighbours;
+    public int NearestNeighboursDebugLevel;
 
     private World World;
     private Entity Entity;
@@ -54,6 +60,9 @@ class BVHDebuggerBehaviour : MonoBehaviour
             
             DebugBoundingBoxes = DebugBoundingBoxes,
             BoundingBoxDebugLevel = BoundingBoxDebugLevel,
+            
+            DebugNearestNeighbours = DebugNearestNeighbours,
+            NearestNeighboursDebugLevel = NearestNeighboursDebugLevel,
         });
     }
 }

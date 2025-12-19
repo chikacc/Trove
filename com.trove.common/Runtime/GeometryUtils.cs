@@ -113,23 +113,57 @@ namespace Trove
         {
             return math.all(Max >= other.Min & Min <= other.Max);
         }
-        
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool OverlapsSphere(in float3 center, float radiusSq)
+        {
+            return DistanceSq(center) < radiusSq;
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public float3 GetCenter()
         {
             return Min + GetExtents();
         }
-        
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public float3 GetExtents()
         {
             return (Max - Min) * 0.5f;
-        }        
-        
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public float GetVolume()
+        {
+            float3 size = Max - Min;
+            return size.x * size.y * size.z;
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public float3 ClosestPoint(float3 position)
         {
             return math.min(Max, math.max(Min, position));
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public float3 FarthestPoint(float3 position)
+        {
+            float3 center = GetCenter();
+            return math.select(Min, Max, position < center);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public float Distance(float3 point)
+        {
+            float3 closest = ClosestPoint(point);
+            return math.distance(point, closest);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public float DistanceSq(float3 point)
+        {
+            float3 closest = ClosestPoint(point);
+            return math.distancesq(point, closest);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -143,9 +177,9 @@ namespace Trove
         {
             float tMin = 0.0f;
             float tMax = float.MaxValue;
-            
+
             float3 invDir = math.rcp(rayDirectionNormalized);
-        
+
             for (int i = 0; i < 3; i++)
             {
                 float t1 = (Min[i] - rayOrigin[i]) * invDir[i];
