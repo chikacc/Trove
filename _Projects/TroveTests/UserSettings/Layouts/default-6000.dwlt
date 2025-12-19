@@ -19,7 +19,7 @@ MonoBehaviour:
     width: 2048
     height: 1060.8
   m_ShowMode: 4
-  m_Title: Profiler
+  m_Title: Console
   m_RootView: {fileID: 2}
   m_MinSize: {x: 875, y: 300}
   m_MaxSize: {x: 10000, y: 10000}
@@ -120,7 +120,7 @@ MonoBehaviour:
   m_MinSize: {x: 300, y: 112}
   m_MaxSize: {x: 24288, y: 16192}
   vertical: 0
-  controlID: 161
+  controlID: 89
   draggingID: 0
 --- !u!114 &6
 MonoBehaviour:
@@ -379,7 +379,7 @@ MonoBehaviour:
         m_PaneScroll: {x: 0, y: 0}
         m_ViewType: 1
         updateViewLive: 0
-        m_CurrentFrameIndex: 1668
+        m_CurrentFrameIndex: 8315
         m_HierarchyOverruledThreadFromSelection: 0
         m_ProfilerViewFilteringOptions: 1
         m_FrameDataHierarchyView:
@@ -2080,9 +2080,9 @@ MonoBehaviour:
   m_AudioPlay: 0
   m_DebugDrawModesUseInteractiveLightBakingData: 0
   m_Position:
-    m_Target: {x: 541.45465, y: 460.2382, z: -27.60473}
+    m_Target: {x: 554.2878, y: 586.52, z: -721.0122}
     speed: 2
-    m_Value: {x: 541.45465, y: 460.2382, z: -27.60473}
+    m_Value: {x: 554.2878, y: 586.52, z: -721.0122}
   m_RenderMode: 0
   m_CameraMode:
     drawMode: 0
@@ -2128,9 +2128,9 @@ MonoBehaviour:
     m_GridAxis: 1
     m_gridOpacity: 0.5
   m_Rotation:
-    m_Target: {x: -0.34105864, y: 0.46895003, z: -0.20128849, w: -0.7897118}
+    m_Target: {x: -0.2514757, y: 0.23463628, z: -0.061854713, w: -0.9371694}
     speed: 2
-    m_Value: {x: -0.34105864, y: 0.46895003, z: -0.20128849, w: -0.7897118}
+    m_Value: {x: -0.2514757, y: 0.23463629, z: -0.061854713, w: -0.93716943}
   m_Size:
     m_Target: 10
     speed: 2
@@ -2357,7 +2357,7 @@ MonoBehaviour:
       m_LastClickedID:
         m_Data: 0
       m_ExpandedIDs:
-      - m_Data: -7768
+      - m_Data: -2972
       - m_Data: -1290
       - m_Data: 46410
       m_RenameOverlay:
@@ -2497,7 +2497,8 @@ MonoBehaviour:
       m_ResourceFile: 
   m_AssetTreeState:
     scrollPos: {x: 0, y: 0}
-    m_SelectedIDs: []
+    m_SelectedIDs:
+    - m_Data: 46396
     m_LastClickedID:
       m_Data: 0
     m_ExpandedIDs:
@@ -2541,8 +2542,9 @@ MonoBehaviour:
       m_Icon: {fileID: 0}
       m_ResourceFile: 
   m_ListAreaState:
-    m_SelectedInstanceIDs: []
-    m_LastClickedInstanceID: 0
+    m_SelectedInstanceIDs:
+    - m_Data: 46396
+    m_LastClickedInstanceID: 46396
     m_HadKeyboardFocusLastEvent: 0
     m_ExpandedInstanceIDs: []
     m_RenameOverlay:
@@ -2601,9 +2603,9 @@ MonoBehaviour:
     width: 427
     height: 978.80005
   m_SerializedDataModeController:
-    m_DataMode: 0
-    m_PreferredDataMode: 0
-    m_SupportedDataModes: 
+    m_DataMode: 3
+    m_PreferredDataMode: 3
+    m_SupportedDataModes: 010000000200000003000000
     isAutomatic: 1
   m_ViewDataDictionary: {fileID: 0}
   m_OverlayCanvas:

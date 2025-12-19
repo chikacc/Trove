@@ -8,6 +8,7 @@ using Unity.Transforms;
 using AABB = Trove.AABB;
 
 [assembly: RegisterGenericJobType(typeof(BVH<#SCRIPTNAME#NodeData>.BVHClearJob))]
+[assembly: RegisterGenericJobType(typeof(BVH<#SCRIPTNAME#NodeData>.BVHReorderNodesJob))]
 
 // This is the user data that the BVH holds for each node (the data you get as results when you query the BVH).
 // Typically this will be just the Entity most of the time, but you can store extra data such as "team" or "entity type"

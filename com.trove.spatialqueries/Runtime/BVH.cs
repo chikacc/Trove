@@ -1,22 +1,19 @@
 using System;
 using System.Runtime.CompilerServices;
-using System.Threading;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
-using Unity.Entities;
 using Unity.Jobs;
 using Unity.Jobs.LowLevel.Unsafe;
 using Unity.Mathematics;
 using UnityEngine;
-using UnityEngine.Assertions;
 
 namespace Trove.SpatialQueries
 {
     public struct BVHNode : IComparable<BVHNode>
     {
         public AABB AABB;
-        public int DataIndex; // For leaf nodes this is index of their data, but for hierarchy nodes this is index of their children
+        public int DataIndex; // For leaf nodes this is index of their data, but for parent nodes this is index of their first child
         public uint MortonCode;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -40,16 +37,17 @@ namespace Trove.SpatialQueries
 
     public struct BVH<TNodeData> where TNodeData : unmanaged
     {
-        internal NativeList<BVHNode> NodesA; // Nodes A and B are used to ping pong between buffers during sorting
+        // Nodes A and B are used to ping pong between buffers during sorting.
+        // After sorting, one of them becomes the "SortedNodes" and the other becomes the "ReorderedNodes"
+        internal NativeList<BVHNode> NodesA;
         internal NativeList<BVHNode> NodesB;
         internal NativeList<TNodeData> LeafNodeDatas;
         internal NativeList<NodeLevelData> NodeLevelDatas;
         internal NativeReference<AABB> SceneAABB;
         internal NativeList<int> RadixSortHistograms;
-        
-        internal bool SortedNodesIsA;
-        internal NativeList<BVHNode> SortedNodes => SortedNodesIsA ? NodesA : NodesB;
-        
+
+        internal NativeList<BVHNode> SortedNodes => NodesA;
+
         public static BVH<TNodeData> Create(Allocator allocator, int initialElementsCapacity)
         {
             BVH<TNodeData> bvh = new BVH<TNodeData>();
@@ -140,36 +138,37 @@ namespace Trove.SpatialQueries
 
             BVHNode* nodesPtr = SortedNodes.GetUnsafeReadOnlyPtr();
             TNodeData* leafDataPtr = LeafNodeDatas.GetUnsafeReadOnlyPtr();
-            int leafCount = LeafNodeDatas.Length;
 
-            QueryAABBRecursive(SortedNodes.Length - 1, aabb, nodesPtr, leafDataPtr, leafCount, ref results);
+            QueryAABBRecursive(SortedNodes.Length - 1, aabb, nodesPtr, leafDataPtr, LeafNodeDatas.Length, ref results);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal unsafe void QueryAABBRecursive(int nodeIndex, in AABB aabb, BVHNode* nodesPtr, TNodeData* leafDataPtr, int leafCount, ref UnsafeList<TNodeData> results)
+        internal unsafe void QueryAABBRecursive(int nodeIndex, in AABB aabb, BVHNode* nodesPtr, TNodeData* leafDataPtr,
+            int leafNodesCount, ref UnsafeList<TNodeData> results)
         {
             BVHNode node = nodesPtr[nodeIndex];
 
             // Early out if invalid or no overlap
-            if (node.DataIndex < 0 || !aabb.OverlapsAABB(node.AABB))
+            if (!aabb.OverlapsAABB(node.AABB) || !node.IsValid())
                 return;
-
-            if (nodeIndex < leafCount)
+            
+            if (nodeIndex < leafNodesCount)
             {
                 // Leaf node - add result
-                results.Add(leafDataPtr[node.DataIndex]);
+                results.AddWithGrowFactor(leafDataPtr[node.DataIndex]);
             }
             else
             {
                 // Internal node - recurse to children
-                QueryAABBRecursive(node.DataIndex, aabb, nodesPtr, leafDataPtr, leafCount, ref results);
-                QueryAABBRecursive(node.DataIndex + 1, aabb, nodesPtr, leafDataPtr, leafCount, ref results);
+                QueryAABBRecursive(node.DataIndex, aabb, nodesPtr, leafDataPtr, leafNodesCount, ref results);
+                QueryAABBRecursive(node.DataIndex + 1, aabb, nodesPtr, leafDataPtr, leafNodesCount, ref results);
             }
         }
 
         public unsafe void QueryAABB(in AABB aabb, ref UnsafeList<int> workStack, ref UnsafeList<TNodeData> results)
         {
             results.Clear();
+
             if (SortedNodes.Length < 1)
             {
                 return;
@@ -178,49 +177,36 @@ namespace Trove.SpatialQueries
             // Get raw pointers for faster access
             BVHNode* nodesPtr = SortedNodes.GetUnsafeReadOnlyPtr();
             TNodeData* leafDataPtr = LeafNodeDatas.GetUnsafeReadOnlyPtr();
-            int leafCount = LeafNodeDatas.Length;
 
             // Add root node to stack
             workStack.Clear();
             workStack.Add(SortedNodes.Length - 1);
 
-            int stackLength = 1;
-            int* stackPtr = workStack.Ptr;
-
-            for (int i = 0; i < stackLength; i++)
+            // Fully process stack 1
+            for (int i = 0; i < workStack.Length; i++)
             {
-                int nodeIndex = stackPtr[i];
+                int nodeIndex = workStack[i];
                 BVHNode node = nodesPtr[nodeIndex];
 
                 // Early out if invalid or no overlap
-                if (node.DataIndex < 0 || !aabb.OverlapsAABB(node.AABB))
+                if (!aabb.OverlapsAABB(node.AABB) || !node.IsValid())
                     continue;
 
-                if (nodeIndex < leafCount)
+                if (nodeIndex < LeafNodeDatas.Length)
                 {
                     // Leaf node - add result directly
-                    results.Add(leafDataPtr[node.DataIndex]);
+                    results.AddWithGrowFactor(leafDataPtr[node.DataIndex]);
                 }
                 else
                 {
-                    // Internal node - add children to stack
-                    // Ensure capacity before adding to avoid checks in the loop
-                    if (stackLength + 2 > workStack.Capacity)
-                    {
-                        workStack.SetCapacity(math.max(workStack.Capacity * 2, stackLength + 2));
-                        stackPtr = workStack.Ptr; // Refresh pointer after reallocation
-                    }
-
-                    stackPtr[stackLength] = node.DataIndex;
-                    stackPtr[stackLength + 1] = node.DataIndex + 1;
-                    stackLength += 2;
+                    workStack.AddWithGrowFactor(node.DataIndex);
+                    workStack.AddWithGrowFactor(node.DataIndex + 1);
                 }
             }
-
-            workStack.Length = stackLength;
         }
 
-        public unsafe void QueryRay(float3 rayOrigin, float3 rayDirectionNormalized, float rayLength, ref UnsafeList<TNodeData> results)
+        public unsafe void QueryRay(float3 rayOrigin, float3 rayDirectionNormalized, float rayLength,
+            ref UnsafeList<TNodeData> results)
         {
             results.Clear();
 
@@ -231,37 +217,42 @@ namespace Trove.SpatialQueries
 
             BVHNode* nodesPtr = SortedNodes.GetUnsafeReadOnlyPtr();
             TNodeData* leafDataPtr = LeafNodeDatas.GetUnsafeReadOnlyPtr();
-            int leafCount = LeafNodeDatas.Length;
 
-            QueryRayRecursive(SortedNodes.Length - 1, rayOrigin, rayDirectionNormalized, rayLength, nodesPtr, leafDataPtr, leafCount, ref results);
+            QueryRayRecursive(SortedNodes.Length - 1, rayOrigin, rayDirectionNormalized, rayLength, nodesPtr,
+                leafDataPtr, LeafNodeDatas.Length, ref results);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal unsafe void QueryRayRecursive(int nodeIndex, in float3 rayOrigin, in float3 rayDirectionNormalized, float rayLength, BVHNode* nodesPtr, TNodeData* leafDataPtr, int leafCount, ref UnsafeList<TNodeData> results)
+        internal unsafe void QueryRayRecursive(int nodeIndex, in float3 rayOrigin, in float3 rayDirectionNormalized,
+            float rayLength, BVHNode* nodesPtr, TNodeData* leafDataPtr, int leafNodesCount, ref UnsafeList<TNodeData> results)
         {
             BVHNode node = nodesPtr[nodeIndex];
 
             // Early out if invalid or no intersection
-            if (node.DataIndex < 0 || !node.AABB.IntersectsRay(rayOrigin, rayDirectionNormalized, rayLength))
+            if (!node.AABB.IntersectsRay(rayOrigin, rayDirectionNormalized, rayLength) || !node.IsValid())
                 return;
 
-            if (nodeIndex < leafCount)
+            if (nodeIndex < leafNodesCount)
             {
                 // Leaf node - add result
-                results.Add(leafDataPtr[node.DataIndex]);
+                results.AddWithGrowFactor(leafDataPtr[node.DataIndex]);
             }
             else
             {
                 // Internal node - recurse to children
-                QueryRayRecursive(node.DataIndex, rayOrigin, rayDirectionNormalized, rayLength, nodesPtr, leafDataPtr, leafCount, ref results);
-                QueryRayRecursive(node.DataIndex + 1, rayOrigin, rayDirectionNormalized, rayLength, nodesPtr, leafDataPtr, leafCount, ref results);
+                QueryRayRecursive(node.DataIndex, rayOrigin, rayDirectionNormalized, rayLength, nodesPtr, 
+                    leafDataPtr, leafNodesCount, ref results);
+                QueryRayRecursive(node.DataIndex + 1, rayOrigin, rayDirectionNormalized, rayLength, nodesPtr,
+                    leafDataPtr, leafNodesCount, ref results);
             }
         }
 
         // TODO: review my AABB.IntersectsRay
-        public unsafe void QueryRay(float3 rayOrigin, float3 rayDirectionNormalized, float rayLength, ref UnsafeList<int> workStack, ref UnsafeList<TNodeData> results)
+        public unsafe void QueryRay(float3 rayOrigin, float3 rayDirectionNormalized, float rayLength,
+            ref UnsafeList<int> workStack, ref UnsafeList<TNodeData> results)
         {
             results.Clear();
+
             if (SortedNodes.Length < 1)
             {
                 return;
@@ -270,46 +261,31 @@ namespace Trove.SpatialQueries
             // Get raw pointers for faster access
             BVHNode* nodesPtr = SortedNodes.GetUnsafePtr();
             TNodeData* leafDataPtr = LeafNodeDatas.GetUnsafePtr();
-            int leafCount = LeafNodeDatas.Length;
 
             // Add root node to stack
             workStack.Clear();
             workStack.Add(SortedNodes.Length - 1);
 
-            int stackLength = 1;
-            int* stackPtr = workStack.Ptr;
-
-            for (int i = 0; i < stackLength; i++)
+            for (int i = 0; i < workStack.Length; i++)
             {
-                int nodeIndex = stackPtr[i];
+                int nodeIndex = workStack[i];
                 BVHNode node = nodesPtr[nodeIndex];
 
                 // Early out if invalid or no intersection
-                if (node.DataIndex < 0 || !node.AABB.IntersectsRay(rayOrigin, rayDirectionNormalized, rayLength))
+                if (!node.AABB.IntersectsRay(rayOrigin, rayDirectionNormalized, rayLength) || !node.IsValid())
                     continue;
 
-                if (nodeIndex < leafCount)
+                if (nodeIndex < LeafNodeDatas.Length)
                 {
                     // Leaf node - add result directly
-                    results.Add(leafDataPtr[node.DataIndex]);
+                    results.AddWithGrowFactor(leafDataPtr[node.DataIndex]);
                 }
                 else
                 {
-                    // Internal node - add children to stack
-                    // Ensure capacity before adding to avoid checks in the loop
-                    if (stackLength + 2 > workStack.Capacity)
-                    {
-                        workStack.SetCapacity(math.max(workStack.Capacity * 2, stackLength + 2));
-                        stackPtr = workStack.Ptr; // Refresh pointer after reallocation
-                    }
-
-                    stackPtr[stackLength] = node.DataIndex;
-                    stackPtr[stackLength + 1] = node.DataIndex + 1;
-                    stackLength += 2;
+                    workStack.AddWithGrowFactor(node.DataIndex);
+                    workStack.AddWithGrowFactor(node.DataIndex + 1);
                 }
             }
-
-            workStack.Length = stackLength;
         }
 
         public JobHandle ScheduleClearJob(JobHandle dep)
@@ -325,7 +301,7 @@ namespace Trove.SpatialQueries
         public JobHandle SchedulePostAddNodeUnsafeJobs(bool parallel, JobHandle dep)
         {
             int workerCount = parallel ? JobsUtility.JobWorkerCount : 1;
-            
+
             NativeArray<AABB> aabbForWorker = new NativeArray<AABB>(workerCount, Allocator.Domain);
 
             dep = new RecomputeSceneAABBsJob
@@ -362,9 +338,8 @@ namespace Trove.SpatialQueries
             {
                 bool isEvenPass = pass % 2 == 0;
                 NativeList<BVHNode> inputNodes = isEvenPass ? NodesA : NodesB;
-                NativeList<BVHNode> outputNodes = isEvenPass ? NodesB : NodesA;
-                SortedNodesIsA = isEvenPass ? false : true;
-
+                NativeList<BVHNode> outputNodes = isEvenPass ? NodesB : NodesA; // Final pass will be 3, which means output ends up in NodesA
+                
                 dep = new BVHRadixSortInitializePassJob
                 {
                     WorkerCount = workerCount,
@@ -440,8 +415,8 @@ namespace Trove.SpatialQueries
             public void Execute()
             {
                 BVH.NodesA.Clear();
-                BVH.LeafNodeDatas.Clear();
                 BVH.NodesB.Clear();
+                BVH.LeafNodeDatas.Clear();
                 BVH.NodeLevelDatas.Clear();
                 BVH.SceneAABB.Value = AABB.GetEmpty();
             }
@@ -581,7 +556,7 @@ namespace Trove.SpatialQueries
                 ref BVHNode nodeRef = ref UnsafeUtility.ArrayElementAsRef<BVHNode>(nodesPtr, i);
                 float3 normalizedPosition = (nodeRef.AABB.GetCenter() - sceneAABB.Min) / sceneDimensions; // Position from 0f to 1f in the scene
                 nodeRef.MortonCode = BVHUtils.ComputeMortonCode(normalizedPosition);
-                nodeRef.DataIndex = i;
+                nodeRef.DataIndex = i; 
             }
         }
     }
@@ -601,7 +576,7 @@ namespace Trove.SpatialQueries
             {
                 OutputNodes.Resize(InputNodes.Length, NativeArrayOptions.UninitializedMemory);
             }
-            
+
             // Clear histogram
             RadixSortHistograms.Resize(BVHUtils.RadixSortBucketCount * WorkerCount, NativeArrayOptions.ClearMemory);
             for (int i = 0; i < RadixSortHistograms.Length; i++)
@@ -652,7 +627,7 @@ namespace Trove.SpatialQueries
         public void Execute()
         {
             int* histogramsPtr = RadixSortHistograms.GetUnsafePtr();
-            
+
             int* bucketValueCounts = stackalloc int[BVHUtils.RadixSortBucketCount];
             int* bucketNodeStartIndexes = stackalloc int[BVHUtils.RadixSortBucketCount];
 
@@ -708,7 +683,7 @@ namespace Trove.SpatialQueries
                 return;
 
             BVHNode* outputNodesPtr = OutputNodes.GetUnsafePtr();
-            
+
             int nodesPerWorker = MathUtilities.DivideIntCeil(InputNodes.Length, WorkerCount);
             int startIndex = workerIndex * nodesPerWorker;
             int endIndex = math.min(InputNodes.Length, startIndex + nodesPerWorker);
@@ -733,7 +708,7 @@ namespace Trove.SpatialQueries
     }
 
     [BurstCompile]
-    public struct BVHPrecomputeHierarchyJob : IJob
+    public unsafe struct BVHPrecomputeHierarchyJob : IJob
     {
         public NativeList<BVHNode> SortedNodes;
         public NativeList<NodeLevelData> NodeLevelDatas;
@@ -816,7 +791,7 @@ namespace Trove.SpatialQueries
     }
 
     [BurstCompile]
-    public struct BVHBuildHierarchyJob : IJobFor
+    public unsafe struct BVHBuildHierarchyJob : IJobFor
     {
         public int WorkerCount;
         [NativeDisableParallelForRestriction]
@@ -868,7 +843,7 @@ namespace Trove.SpatialQueries
                 {
                     int lastPairIndex = nodesEnd - 2;
                     AABB aabb = SortedNodes[lastPairIndex].AABB;
-                    if (SortedNodes[lastPairIndex + 1].DataIndex >= 0)
+                    if (SortedNodes[lastPairIndex + 1].IsValid())
                     {
                         aabb.Include(SortedNodes[lastPairIndex + 1].AABB);
                     }
@@ -886,7 +861,7 @@ namespace Trove.SpatialQueries
                 nodeLevelData = NodeLevelDatas[currentLevel];
                 nodesLength /= 2;
                 nodesStart = nodeLevelData.StartIndex + (workerIndex * nodesLength);
-                nodesEnd = math.min(nodesStart + nodeLevelData.Count, nodesStart + nodesLength);
+                nodesEnd = math.min(nodeLevelData.StartIndex + nodeLevelData.Count, nodesStart + nodesLength);
                 if (currentLevel + 1 < NodeLevelDatas.Length)
                 {
                     nextLevelAddIndex = NodeLevelDatas[currentLevel + 1].StartIndex + (workerIndex * nodesLength / 2);
@@ -901,7 +876,7 @@ namespace Trove.SpatialQueries
     }
 
     [BurstCompile]
-    public struct BVHBuildHierarchyFinalizeJob : IJob
+    public unsafe struct BVHBuildHierarchyFinalizeJob : IJob
     {
         public NativeReference<int> ParallelWorkersLastWrittenLevel;
         public NativeList<BVHNode> SortedNodes;
@@ -925,7 +900,7 @@ namespace Trove.SpatialQueries
                 {
                     AABB aabb = SortedNodes[i].AABB;
                     aabb.Include(SortedNodes[i + 1].AABB);
-
+                    
                     SortedNodes[nextLevelAddIndex] = new BVHNode
                     {
                         AABB = aabb,
@@ -939,7 +914,7 @@ namespace Trove.SpatialQueries
                 {
                     int lastPairIndex = nodesEnd - 2;
                     AABB aabb = SortedNodes[lastPairIndex].AABB;
-                    if (SortedNodes[lastPairIndex + 1].DataIndex >= 0)
+                    if (SortedNodes[lastPairIndex + 1].IsValid())
                     {
                         aabb.Include(SortedNodes[lastPairIndex + 1].AABB);
                     }

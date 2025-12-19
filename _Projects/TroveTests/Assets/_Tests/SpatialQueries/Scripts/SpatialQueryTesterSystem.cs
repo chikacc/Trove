@@ -12,7 +12,6 @@ using UnityEngine;
 using AABB = Trove.AABB;
 
 [assembly: RegisterGenericJobType(typeof(BVH<TestNodeData>.BVHClearJob))]
-
     
 public struct TestNodeData
 {
@@ -166,7 +165,7 @@ partial struct SpatialQueryTesterSystem : ISystem
                         for (int i = levelNodesData.StartIndex; i < levelNodesData.StartIndex + levelNodesData.Count; i++)
                         {
                             BVHNode node = nodes[i];
-                            if (node.DataIndex >= 0)
+                            if (node.IsValid())
                             {
                                 _debugDrawGroup.DrawWireBox(
                                     node.AABB.GetCenter(),
@@ -193,7 +192,7 @@ partial struct SpatialQueryTesterSystem : ISystem
                     allQueryResults.AddRange(queryResults);
                     _bvh.QueryRay(debugger.QueryPosition, debugger.QueryDirection, debugger.QueryLength, ref queryResults);
                     allQueryResults.AddRange(queryResults);
-                    
+
                     // Draw query ray
                     _debugDrawGroup.DrawRay(
                         debugger.QueryPosition, 
@@ -275,7 +274,7 @@ partial struct SpatialQueryTesterSystem : ISystem
         [ReadOnly]
         public BVH<TestNodeData> BVH;
 
-        private UnsafeList<int> nodeStack;
+        private UnsafeList<int> workStack;
         private UnsafeList<TestNodeData> results;
         
         public void Execute(in LocalTransform transform, ref BVHTestObject test)
@@ -287,9 +286,9 @@ partial struct SpatialQueryTesterSystem : ISystem
 
         public bool OnChunkBegin(in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
         {
-            if (!nodeStack.IsCreated)
+            if (!workStack.IsCreated)
             {
-                nodeStack = new UnsafeList<int>(32, Allocator.Temp);
+                workStack = new UnsafeList<int>(32, Allocator.Temp);
             }
             if (!results.IsCreated)
             {
