@@ -129,7 +129,7 @@ namespace Trove.SpatialQueries
             LeafNodeDatas[atIndex] = nodeData;
         }
 
-        public void QueryAABB(in AABB aabb, ref UnsafeList<TNodeData> results)
+        public unsafe void QueryAABB(in AABB aabb, ref UnsafeList<TNodeData> results)
         {
             results.Clear();
 
@@ -138,60 +138,89 @@ namespace Trove.SpatialQueries
                 return;
             }
 
-            QueryAABBRecursive(SortedNodes.Length - 1, aabb, ref results);
+            BVHNode* nodesPtr = SortedNodes.GetUnsafeReadOnlyPtr();
+            TNodeData* leafDataPtr = LeafNodeDatas.GetUnsafeReadOnlyPtr();
+            int leafCount = LeafNodeDatas.Length;
+
+            QueryAABBRecursive(SortedNodes.Length - 1, aabb, nodesPtr, leafDataPtr, leafCount, ref results);
         }
 
-        internal void QueryAABBRecursive(int nodeIndex, in AABB aabb, ref UnsafeList<TNodeData> results)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal unsafe void QueryAABBRecursive(int nodeIndex, in AABB aabb, BVHNode* nodesPtr, TNodeData* leafDataPtr, int leafCount, ref UnsafeList<TNodeData> results)
         {
-            BVHNode queriedNode = SortedNodes[nodeIndex];
-            if (queriedNode.IsValid() && aabb.OverlapsAABB(queriedNode.AABB))
+            BVHNode node = nodesPtr[nodeIndex];
+
+            // Early out if invalid or no overlap
+            if (node.DataIndex < 0 || !aabb.OverlapsAABB(node.AABB))
+                return;
+
+            if (nodeIndex < leafCount)
             {
-                if (nodeIndex < LeafNodeDatas.Length)
-                {
-                    results.AddWithGrowFactor(LeafNodeDatas[queriedNode.DataIndex]);
-                }
-                else
-                {
-                    // Add both child nodes to stack
-                    QueryAABBRecursive(queriedNode.DataIndex, aabb, ref results);
-                    QueryAABBRecursive(queriedNode.DataIndex + 1, aabb, ref results);
-                }
+                // Leaf node - add result
+                results.Add(leafDataPtr[node.DataIndex]);
+            }
+            else
+            {
+                // Internal node - recurse to children
+                QueryAABBRecursive(node.DataIndex, aabb, nodesPtr, leafDataPtr, leafCount, ref results);
+                QueryAABBRecursive(node.DataIndex + 1, aabb, nodesPtr, leafDataPtr, leafCount, ref results);
             }
         }
 
-        public void QueryAABB(in AABB aabb, ref UnsafeList<int> workStack, ref UnsafeList<TNodeData> results)
+        public unsafe void QueryAABB(in AABB aabb, ref UnsafeList<int> workStack, ref UnsafeList<TNodeData> results)
         {
             results.Clear();
             if (SortedNodes.Length < 1)
             {
                 return;
             }
+
+            // Get raw pointers for faster access
+            BVHNode* nodesPtr = SortedNodes.GetUnsafeReadOnlyPtr();
+            TNodeData* leafDataPtr = LeafNodeDatas.GetUnsafeReadOnlyPtr();
+            int leafCount = LeafNodeDatas.Length;
 
             // Add root node to stack
             workStack.Clear();
             workStack.Add(SortedNodes.Length - 1);
 
-            for (int i = 0; i < workStack.Length; i++)
+            int stackLength = 1;
+            int* stackPtr = workStack.Ptr;
+
+            for (int i = 0; i < stackLength; i++)
             {
-                int nodeIndex = workStack[i];
-                BVHNode queriedNode = SortedNodes[nodeIndex];
-                if (queriedNode.IsValid() && aabb.OverlapsAABB(queriedNode.AABB))
+                int nodeIndex = stackPtr[i];
+                BVHNode node = nodesPtr[nodeIndex];
+
+                // Early out if invalid or no overlap
+                if (node.DataIndex < 0 || !aabb.OverlapsAABB(node.AABB))
+                    continue;
+
+                if (nodeIndex < leafCount)
                 {
-                    if (nodeIndex < LeafNodeDatas.Length)
+                    // Leaf node - add result directly
+                    results.Add(leafDataPtr[node.DataIndex]);
+                }
+                else
+                {
+                    // Internal node - add children to stack
+                    // Ensure capacity before adding to avoid checks in the loop
+                    if (stackLength + 2 > workStack.Capacity)
                     {
-                        results.AddWithGrowFactor(LeafNodeDatas[queriedNode.DataIndex]);
+                        workStack.SetCapacity(math.max(workStack.Capacity * 2, stackLength + 2));
+                        stackPtr = workStack.Ptr; // Refresh pointer after reallocation
                     }
-                    else
-                    {
-                        // Add both child nodes to stack
-                        workStack.AddWithGrowFactor(queriedNode.DataIndex);
-                        workStack.AddWithGrowFactor(queriedNode.DataIndex + 1);
-                    }
+
+                    stackPtr[stackLength] = node.DataIndex;
+                    stackPtr[stackLength + 1] = node.DataIndex + 1;
+                    stackLength += 2;
                 }
             }
+
+            workStack.Length = stackLength;
         }
 
-        public void QueryRay(float3 rayOrigin, float3 rayDirectionNormalized, float rayLength, ref UnsafeList<TNodeData> results)
+        public unsafe void QueryRay(float3 rayOrigin, float3 rayDirectionNormalized, float rayLength, ref UnsafeList<TNodeData> results)
         {
             results.Clear();
 
@@ -200,59 +229,87 @@ namespace Trove.SpatialQueries
                 return;
             }
 
-            QueryRayRecursive(SortedNodes.Length - 1, rayOrigin, rayDirectionNormalized, rayLength, ref results);
+            BVHNode* nodesPtr = SortedNodes.GetUnsafeReadOnlyPtr();
+            TNodeData* leafDataPtr = LeafNodeDatas.GetUnsafeReadOnlyPtr();
+            int leafCount = LeafNodeDatas.Length;
+
+            QueryRayRecursive(SortedNodes.Length - 1, rayOrigin, rayDirectionNormalized, rayLength, nodesPtr, leafDataPtr, leafCount, ref results);
         }
 
-        internal void QueryRayRecursive(int nodeIndex, float3 rayOrigin, float3 rayDirectionNormalized, float rayLength, ref UnsafeList<TNodeData> results)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal unsafe void QueryRayRecursive(int nodeIndex, in float3 rayOrigin, in float3 rayDirectionNormalized, float rayLength, BVHNode* nodesPtr, TNodeData* leafDataPtr, int leafCount, ref UnsafeList<TNodeData> results)
         {
-            BVHNode queriedNode = SortedNodes[nodeIndex];
-            if (queriedNode.IsValid() && queriedNode.AABB.IntersectsRay(rayOrigin, rayDirectionNormalized, rayLength))
+            BVHNode node = nodesPtr[nodeIndex];
+
+            // Early out if invalid or no intersection
+            if (node.DataIndex < 0 || !node.AABB.IntersectsRay(rayOrigin, rayDirectionNormalized, rayLength))
+                return;
+
+            if (nodeIndex < leafCount)
             {
-                if (nodeIndex < LeafNodeDatas.Length)
-                {
-                    results.AddWithGrowFactor(LeafNodeDatas[queriedNode.DataIndex]);
-                }
-                else
-                {
-                    // Add both child nodes to stack
-                    QueryRayRecursive(queriedNode.DataIndex, rayOrigin, rayDirectionNormalized, rayLength, ref results);
-                    QueryRayRecursive(queriedNode.DataIndex + 1, rayOrigin, rayDirectionNormalized, rayLength, ref results);
-                }
+                // Leaf node - add result
+                results.Add(leafDataPtr[node.DataIndex]);
+            }
+            else
+            {
+                // Internal node - recurse to children
+                QueryRayRecursive(node.DataIndex, rayOrigin, rayDirectionNormalized, rayLength, nodesPtr, leafDataPtr, leafCount, ref results);
+                QueryRayRecursive(node.DataIndex + 1, rayOrigin, rayDirectionNormalized, rayLength, nodesPtr, leafDataPtr, leafCount, ref results);
             }
         }
 
         // TODO: review my AABB.IntersectsRay
-        public void QueryRay(float3 rayOrigin, float3 rayDirectionNormalized, float rayLength, ref UnsafeList<int> workStack, ref UnsafeList<TNodeData> results)
+        public unsafe void QueryRay(float3 rayOrigin, float3 rayDirectionNormalized, float rayLength, ref UnsafeList<int> workStack, ref UnsafeList<TNodeData> results)
         {
             results.Clear();
             if (SortedNodes.Length < 1)
             {
                 return;
             }
-            ;
+
+            // Get raw pointers for faster access
+            BVHNode* nodesPtr = SortedNodes.GetUnsafePtr();
+            TNodeData* leafDataPtr = LeafNodeDatas.GetUnsafePtr();
+            int leafCount = LeafNodeDatas.Length;
 
             // Add root node to stack
             workStack.Clear();
             workStack.Add(SortedNodes.Length - 1);
 
-            for (int i = 0; i < workStack.Length; i++)
+            int stackLength = 1;
+            int* stackPtr = workStack.Ptr;
+
+            for (int i = 0; i < stackLength; i++)
             {
-                int nodeIndex = workStack[i];
-                BVHNode queriedNode = SortedNodes[nodeIndex];
-                if (queriedNode.IsValid() && queriedNode.AABB.IntersectsRay(rayOrigin, rayDirectionNormalized, rayLength))
+                int nodeIndex = stackPtr[i];
+                BVHNode node = nodesPtr[nodeIndex];
+
+                // Early out if invalid or no intersection
+                if (node.DataIndex < 0 || !node.AABB.IntersectsRay(rayOrigin, rayDirectionNormalized, rayLength))
+                    continue;
+
+                if (nodeIndex < leafCount)
                 {
-                    if (nodeIndex < LeafNodeDatas.Length)
+                    // Leaf node - add result directly
+                    results.Add(leafDataPtr[node.DataIndex]);
+                }
+                else
+                {
+                    // Internal node - add children to stack
+                    // Ensure capacity before adding to avoid checks in the loop
+                    if (stackLength + 2 > workStack.Capacity)
                     {
-                        results.AddWithGrowFactor(LeafNodeDatas[queriedNode.DataIndex]);
+                        workStack.SetCapacity(math.max(workStack.Capacity * 2, stackLength + 2));
+                        stackPtr = workStack.Ptr; // Refresh pointer after reallocation
                     }
-                    else
-                    {
-                        // Add both child nodes to stack
-                        workStack.AddWithGrowFactor(queriedNode.DataIndex);
-                        workStack.AddWithGrowFactor(queriedNode.DataIndex + 1);
-                    }
+
+                    stackPtr[stackLength] = node.DataIndex;
+                    stackPtr[stackLength + 1] = node.DataIndex + 1;
+                    stackLength += 2;
                 }
             }
+
+            workStack.Length = stackLength;
         }
 
         public JobHandle ScheduleClearJob(JobHandle dep)
