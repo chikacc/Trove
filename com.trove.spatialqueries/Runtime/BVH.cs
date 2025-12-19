@@ -270,12 +270,8 @@ namespace Trove.SpatialQueries
             int workerCount = parallel ? JobsUtility.JobWorkerCount : 1;
             
             NativeArray<AABB> aabbForWorker = new NativeArray<AABB>(workerCount, Allocator.Domain);
-            for (int i = 0; i < workerCount; i++)
-            {
-                aabbForWorker[i] = AABB.GetEmpty();
-            }
 
-            dep = new RecomputeSceneAABBsParallelJob
+            dep = new RecomputeSceneAABBsJob
             {
                 WorkerCount = workerCount,
                 UnsortedNodes = NodesA,
@@ -352,7 +348,7 @@ namespace Trove.SpatialQueries
 
             NativeReference<int> parallelWorkersLastWrittenLevel = new NativeReference<int>(Allocator.Domain);
 
-            dep = new BVHBuildHierarchyParallelJob
+            dep = new BVHBuildHierarchyJob
             {
                 WorkerCount = workerCount,
                 ParallelWorkersLastWrittenLevel = parallelWorkersLastWrittenLevel,
@@ -464,7 +460,7 @@ namespace Trove.SpatialQueries
     }
 
     [BurstCompile]
-    public unsafe struct RecomputeSceneAABBsParallelJob : IJobFor
+    public struct RecomputeSceneAABBsJob : IJobFor
     {
         public int WorkerCount;
         [ReadOnly]
@@ -478,12 +474,12 @@ namespace Trove.SpatialQueries
             int startIndex = workerIndex * nodesPerWorker;
             int endIndex = math.min(UnsortedNodes.Length, startIndex + nodesPerWorker);
 
-            ref AABB aabbForWorker = ref UnsafeUtility.ArrayElementAsRef<AABB>(AABBForWorker.GetUnsafePtr(), workerIndex);
-
+            AABB sceneAABB = AABB.GetEmpty();
             for (int i = startIndex; i < endIndex; i++)
             {
-                aabbForWorker.Include(UnsortedNodes[i].AABB);
+                sceneAABB.Include(UnsortedNodes[i].AABB);
             }
+            AABBForWorker[workerIndex] = sceneAABB;
         }
     }
 
@@ -763,7 +759,7 @@ namespace Trove.SpatialQueries
     }
 
     [BurstCompile]
-    public struct BVHBuildHierarchyParallelJob : IJobFor
+    public struct BVHBuildHierarchyJob : IJobFor
     {
         public int WorkerCount;
         [NativeDisableParallelForRestriction]

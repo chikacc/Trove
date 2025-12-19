@@ -103,7 +103,7 @@ partial struct SpatialQueryTesterSystem : ISystem
                     Bvh = _bvh,
                 }.ScheduleParallel(state.Dependency);
 
-                state.Dependency = _bvh.SchedulePostAddNodeUnsafeJobs(state.Dependency);
+                state.Dependency = _bvh.SchedulePostAddNodeUnsafeJobs(tester.UseParallelBuild, state.Dependency);
                 
                 addIndex.Dispose(state.Dependency);
             }
