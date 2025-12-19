@@ -55,10 +55,9 @@ namespace Trove.SpatialQueries
             internal int CurrentLevel;
             internal float MaxDistance;
 
-            private float PrevDistance;
             private bool InvalidatedForNextBatches;
 
-            public bool NextResultsBatch(in BVH<TNodeData> bvh, ref UnsafeList<NearestNeighborResult> results, bool sortResults = true, float maxDistanceGrowthFactor = 2f)
+            public bool NextResultsBatch(in BVH<TNodeData> bvh, ref UnsafeList<NearestNeighborResult> results, bool sortResults = true)
             {
                 results.Clear();
                 
@@ -71,11 +70,6 @@ namespace Trove.SpatialQueries
                 AABB currentNodeAABB = bvh.SortedNodes[levelData.StartIndex + CurrentNodeIndexInLevel].AABB;
                 float queryDistance = math.distance(currentNodeAABB.FarthestPoint(Position), Position);
 
-                if (CurrentLevel > 0)
-                {
-                    queryDistance = math.min(queryDistance, PrevDistance * maxDistanceGrowthFactor);
-                }
-
                 if (queryDistance > MaxDistance)
                 {
                     InvalidatedForNextBatches = true;
@@ -83,6 +77,9 @@ namespace Trove.SpatialQueries
                 }
                 
                 bvh.QueryNearestNeighborsInternal(Position, queryDistance, ref results);
+
+                if (results.Length == 0)
+                    return false;
                 
                 if (sortResults)
                 {
@@ -91,7 +88,6 @@ namespace Trove.SpatialQueries
                 
                 CurrentLevel++;
                 CurrentNodeIndexInLevel /= 2; // parent node
-                PrevDistance = queryDistance;
 
                 return true;
             }
@@ -187,19 +183,21 @@ namespace Trove.SpatialQueries
             LeafNodeDatas[atIndex] = nodeData;
         }
 
-        public unsafe void QueryAABB(in AABB aabb, ref UnsafeList<TNodeData> results)
+        public unsafe bool QueryAABB(in AABB aabb, ref UnsafeList<TNodeData> results)
         {
             results.Clear();
 
             if (SortedNodes.Length < 1)
             {
-                return;
+                return false;
             }
 
             BVHNode* nodesPtr = SortedNodes.GetUnsafeReadOnlyPtr();
             TNodeData* leafDataPtr = LeafNodeDatas.GetUnsafeReadOnlyPtr();
 
             QueryAABBRecursive(SortedNodes.Length - 1, aabb, nodesPtr, leafDataPtr, LeafNodeDatas.Length, ref results);
+
+            return results.Length > 0;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -225,13 +223,13 @@ namespace Trove.SpatialQueries
             }
         }
 
-        public unsafe void QueryAABB(in AABB aabb, ref UnsafeList<int> workStack, ref UnsafeList<TNodeData> results)
+        public unsafe bool QueryAABB(in AABB aabb, ref UnsafeList<int> workStack, ref UnsafeList<TNodeData> results)
         {
             results.Clear();
 
             if (SortedNodes.Length < 1)
             {
-                return;
+                return false;
             }
 
             // Get raw pointers for faster access
@@ -263,21 +261,25 @@ namespace Trove.SpatialQueries
                     workStack.AddWithGrowFactor(node.DataIndex + 1);
                 }
             }
+
+            return results.Length > 0;
         }
 
-        public unsafe void QuerySphere(in float3 position, float radius, ref UnsafeList<TNodeData> results)
+        public unsafe bool QuerySphere(in float3 position, float radius, ref UnsafeList<TNodeData> results)
         {
             results.Clear();
 
             if (SortedNodes.Length < 1)
             {
-                return;
+                return false;
             }
 
             BVHNode* nodesPtr = SortedNodes.GetUnsafeReadOnlyPtr();
             TNodeData* leafDataPtr = LeafNodeDatas.GetUnsafeReadOnlyPtr();
 
             QuerySphereRecursive(SortedNodes.Length - 1, position, radius * radius, nodesPtr, leafDataPtr, LeafNodeDatas.Length, ref results);
+
+            return results.Length > 0;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -303,13 +305,13 @@ namespace Trove.SpatialQueries
             }
         }
 
-        public unsafe void QuerySphere(in float3 position, float radius, ref UnsafeList<int> workStack, ref UnsafeList<TNodeData> results)
+        public unsafe bool QuerySphere(in float3 position, float radius, ref UnsafeList<int> workStack, ref UnsafeList<TNodeData> results)
         {
             results.Clear();
 
             if (SortedNodes.Length < 1)
             {
-                return;
+                return false;
             }
 
             // Get raw pointers for faster access
@@ -343,16 +345,18 @@ namespace Trove.SpatialQueries
                     workStack.AddWithGrowFactor(node.DataIndex + 1);
                 }
             }
+
+            return results.Length > 0;
         }
 
-        public unsafe void QueryRay(float3 rayOrigin, float3 rayDirectionNormalized, float rayLength,
+        public unsafe bool QueryRay(float3 rayOrigin, float3 rayDirectionNormalized, float rayLength,
             ref UnsafeList<TNodeData> results)
         {
             results.Clear();
 
             if (SortedNodes.Length < 1)
             {
-                return;
+                return false;
             }
 
             BVHNode* nodesPtr = SortedNodes.GetUnsafeReadOnlyPtr();
@@ -360,6 +364,8 @@ namespace Trove.SpatialQueries
 
             QueryRayRecursive(SortedNodes.Length - 1, rayOrigin, rayDirectionNormalized, rayLength, nodesPtr,
                 leafDataPtr, LeafNodeDatas.Length, ref results);
+
+            return results.Length > 0;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -388,14 +394,14 @@ namespace Trove.SpatialQueries
         }
 
         // TODO: review my AABB.IntersectsRay
-        public unsafe void QueryRay(float3 rayOrigin, float3 rayDirectionNormalized, float rayLength,
+        public unsafe bool QueryRay(float3 rayOrigin, float3 rayDirectionNormalized, float rayLength,
             ref UnsafeList<int> workStack, ref UnsafeList<TNodeData> results)
         {
             results.Clear();
 
             if (SortedNodes.Length < 1)
             {
-                return;
+                return false;
             }
 
             // Get raw pointers for faster access
@@ -426,6 +432,24 @@ namespace Trove.SpatialQueries
                     workStack.AddWithGrowFactor(node.DataIndex + 1);
                 }
             }
+
+            return results.Length > 0;
+        }
+
+        public bool QueryNearestNeighbor(float3 position, ref UnsafeList<NearestNeighborResult> results, 
+            out NearestNeighborResult nearestResult, float maxDistance = float.MaxValue)
+        {
+            if (CreateNearestNeighborsQuerier(position, out NearestNeighborsQuerier querier, maxDistance))
+            {
+                if(querier.NextResultsBatch(in this, ref results, true))
+                {
+                    nearestResult = results[0];
+                    return true;
+                }
+            }
+
+            nearestResult = default;
+            return false;
         }
 
         public unsafe bool CreateNearestNeighborsQuerier(float3 position, out NearestNeighborsQuerier querier, float maxDistance = float.MaxValue)
@@ -491,7 +515,8 @@ namespace Trove.SpatialQueries
                     float closestDistanceSqSoFar = math.distancesq(position, iteratedNodePos);
                     
                     // Find the closest in a range of X from that node
-                    int halfRange = 15;
+                    // (this mitigates the impact of large jumps in decoded morton code positions)
+                    int halfRange = 8;
                     int startIndex = math.max(0, indexOfClosestMorton - halfRange);
                     int endIndex = math.min(LeafNodeDatas.Length, indexOfClosestMorton + halfRange);
                     for (int i = startIndex; i <= endIndex; i++)

@@ -120,7 +120,7 @@ MonoBehaviour:
   m_MinSize: {x: 300, y: 112}
   m_MaxSize: {x: 24288, y: 16192}
   vertical: 0
-  controlID: 60
+  controlID: 162
   draggingID: 0
 --- !u!114 &6
 MonoBehaviour:
@@ -146,7 +146,7 @@ MonoBehaviour:
   m_MinSize: {x: 100, y: 112}
   m_MaxSize: {x: 8096, y: 16192}
   vertical: 1
-  controlID: 61
+  controlID: 35
   draggingID: 0
 --- !u!114 &7
 MonoBehaviour:
@@ -379,7 +379,7 @@ MonoBehaviour:
         m_PaneScroll: {x: 0, y: 0}
         m_ViewType: 1
         updateViewLive: 0
-        m_CurrentFrameIndex: 6265
+        m_CurrentFrameIndex: 27267
         m_HierarchyOverruledThreadFromSelection: 0
         m_ProfilerViewFilteringOptions: 1
         m_FrameDataHierarchyView:
@@ -2080,9 +2080,9 @@ MonoBehaviour:
   m_AudioPlay: 0
   m_DebugDrawModesUseInteractiveLightBakingData: 0
   m_Position:
-    m_Target: {x: 554.2878, y: 586.52, z: -721.0122}
+    m_Target: {x: 515.03784, y: 405.46722, z: -116.3672}
     speed: 2
-    m_Value: {x: 2298.5925, y: 904.8057, z: -1193.9298}
+    m_Value: {x: 515.03784, y: 405.46722, z: -116.3672}
   m_RenderMode: 0
   m_CameraMode:
     drawMode: 0
@@ -2128,13 +2128,13 @@ MonoBehaviour:
     m_GridAxis: 1
     m_gridOpacity: 0.5
   m_Rotation:
-    m_Target: {x: -0.2514757, y: 0.23463628, z: -0.061854713, w: -0.9371694}
+    m_Target: {x: 0.21134454, y: -0.3972492, z: 0.09336483, w: 0.8884053}
     speed: 2
-    m_Value: {x: -0.14135979, y: 0.51563174, z: -0.0854456, w: -0.84098107}
+    m_Value: {x: -0.21134454, y: 0.39724922, z: -0.09336483, w: -0.8884053}
   m_Size:
-    m_Target: 10
+    m_Target: 10.45
     speed: 2
-    m_Value: 10
+    m_Value: 10.45
   m_Ortho:
     m_Target: 0
     speed: 2
@@ -2357,9 +2357,7 @@ MonoBehaviour:
       m_LastClickedID:
         m_Data: 0
       m_ExpandedIDs:
-      - m_Data: -16964
-      - m_Data: -1292
-      - m_Data: 46410
+      - m_Data: -1304
       m_RenameOverlay:
         m_UserAcceptedRename: 0
         m_Name: 
@@ -2434,7 +2432,8 @@ MonoBehaviour:
     m_ShowAllHits: 0
     m_SkipHidden: 0
     m_SearchArea: 1
-    m_Folders: []
+    m_Folders:
+    - Packages/com.trove.spatialqueries
     m_Globs: []
     m_ProductIds: 
     m_AnyWithAssetOrigin: 0
@@ -2456,6 +2455,7 @@ MonoBehaviour:
       m_Data: 0
     m_ExpandedIDs:
     - m_Data: 0
+    - m_Data: 46670
     - m_Data: 46672
     - m_Data: 46674
     - m_Data: 46676
@@ -2468,7 +2468,6 @@ MonoBehaviour:
     - m_Data: 46690
     - m_Data: 46692
     - m_Data: 46694
-    - m_Data: 46696
     m_RenameOverlay:
       m_UserAcceptedRename: 0
       m_Name: 
@@ -2495,13 +2494,14 @@ MonoBehaviour:
       m_Icon: {fileID: 0}
       m_ResourceFile: 
   m_AssetTreeState:
-    scrollPos: {x: 0, y: 0}
+    scrollPos: {x: 0, y: 863.99994}
     m_SelectedIDs:
-    - m_Data: 46396
+    - m_Data: 46922
     m_LastClickedID:
-      m_Data: 0
+      m_Data: 46922
     m_ExpandedIDs:
     - m_Data: 0
+    - m_Data: 46670
     - m_Data: 46672
     - m_Data: 46674
     - m_Data: 46676
@@ -2514,7 +2514,6 @@ MonoBehaviour:
     - m_Data: 46690
     - m_Data: 46692
     - m_Data: 46694
-    - m_Data: 46696
     m_RenameOverlay:
       m_UserAcceptedRename: 0
       m_Name: 
@@ -2542,8 +2541,8 @@ MonoBehaviour:
       m_ResourceFile: 
   m_ListAreaState:
     m_SelectedInstanceIDs:
-    - m_Data: 46396
-    m_LastClickedInstanceID: 46396
+    - m_Data: 46922
+    m_LastClickedInstanceID: 46922
     m_HadKeyboardFocusLastEvent: 0
     m_ExpandedInstanceIDs: []
     m_RenameOverlay:
@@ -2602,9 +2601,9 @@ MonoBehaviour:
     width: 427
     height: 978.80005
   m_SerializedDataModeController:
-    m_DataMode: 3
-    m_PreferredDataMode: 3
-    m_SupportedDataModes: 010000000200000003000000
+    m_DataMode: 0
+    m_PreferredDataMode: 0
+    m_SupportedDataModes: 
     isAutomatic: 1
   m_ViewDataDictionary: {fileID: 0}
   m_OverlayCanvas:

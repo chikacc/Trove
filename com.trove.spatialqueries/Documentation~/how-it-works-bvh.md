@@ -73,7 +73,7 @@ public partial struct QueryBVHJob : IJobEntity, IJobEntityChunkBeginEnd
 
 ### Querying nearest neighbors
 
-You can also query nearest neighbors very efficiently, using a `BVH<MyBVHMyBVHNodeData>NearestNeighborsQuerier`. This is a struct that allows you to iteratively query a group of close results, and expand the search at every iteration. The first iteration is guaranteed to give you at least one result.
+You can also query nearest neighbors very efficiently, using a `BVH<MyBVHNodeData>NearestNeighborsQuerier`. This is a struct that allows you to iteratively query a group of close results, and expand the search at every iteration. The first iteration is guaranteed to give you at least one result.
 
 This code sample demonstrates its usage in a job:
 ```cs
@@ -90,15 +90,18 @@ public partial struct NearestNeighborsJob : IJobEntity
     
     public void Execute(in LocalTransform transform, ref MyQuerier querier)
     {
+            // Find the absolute closest neighbor like this:
         if (_bvh.CreateNearestNeighborsQuerier(transform.Position, out BVH<MyBVHNodeData>.NearestNeighborsQuerier nearestNeighborsQuerier))
         {
-            // Find the absolute closest neighbor like this:
             if(nearestNeighborsQuerier.NextResultsBatch(in _bvh, ref queryResults, true))
             {
                 Debug.Log($"The closest result is {queryResults[0].Data.Entity.Index} at distance {queryResults[0].Distance}");
             }
+        }
             
             // Iterate closest neighbors until we find one that meets a condition like this:
+        if (_bvh.CreateNearestNeighborsQuerier(transform.Position, out nearestNeighborsQuerier))
+        {
             bool conditionMet = false;
             float maxDistance = 100f;
             while(!conditionMet && nearestNeighborsQuerier.NextResultsBatch(in _bvh, ref queryResults, true))
