@@ -265,9 +265,10 @@ namespace Trove.SpatialQueries
             return dep;
         }
 
-        public JobHandle SchedulePostAddNodeUnsafeJobs(JobHandle dep)
+        public JobHandle SchedulePostAddNodeUnsafeJobs(bool parallel, JobHandle dep)
         {
-            int workerCount = JobsUtility.JobWorkerCount;
+            int workerCount = parallel ? JobsUtility.JobWorkerCount : 1;
+            
             NativeArray<AABB> aabbForWorker = new NativeArray<AABB>(workerCount, Allocator.Domain);
             for (int i = 0; i < workerCount; i++)
             {
@@ -294,7 +295,7 @@ namespace Trove.SpatialQueries
 
         public JobHandle ScheduleBuildJobs(bool parallel, JobHandle dep)
         {
-            int workerCount = JobsUtility.JobWorkerCount;
+            int workerCount = parallel ? JobsUtility.JobWorkerCount : 1;
 
             dep = new BVHComputeMortonCodesAndDataIndexesJob
             {
@@ -303,93 +304,70 @@ namespace Trove.SpatialQueries
                 UnsortedNodes = NodesA,
             }.ScheduleParallel(workerCount, 1, dep);
 
-            if (parallel)
+            // Radix sort by bytes of the morton code (4 bytes = 4 passes)
+            for (int pass = 0; pass < BVHUtils.RadixSortPasses; pass++)
             {
-                // Radix sort by bytes of the morton code (4 bytes = 4 passes)
-                for (int pass = 0; pass < BVHUtils.RadixSortPasses; pass++)
-                {
-                    bool isEvenPass = pass % 2 == 0;
-                    NativeList<BVHNode> inputNodes = isEvenPass ? NodesA : NodesB;
-                    NativeList<BVHNode> outputNodes = isEvenPass ? NodesB : NodesA;
-                    SortedNodesIsA = isEvenPass ? false : true;
+                bool isEvenPass = pass % 2 == 0;
+                NativeList<BVHNode> inputNodes = isEvenPass ? NodesA : NodesB;
+                NativeList<BVHNode> outputNodes = isEvenPass ? NodesB : NodesA;
+                SortedNodesIsA = isEvenPass ? false : true;
 
-                    dep = new BVHInitRadixSortInitializePassJob
-                    {
-                        WorkerCount = workerCount,
-                        InputNodes = inputNodes,
-                        OutputNodes = outputNodes,
-                        RadixSortHistograms = RadixSortHistograms,
-                    }.Schedule(dep);
-
-                    dep = new BVHRadixSortComputeBucketHistogramJob
-                    {
-                        WorkerCount = workerCount,
-                        Pass = pass,
-                        Nodes = inputNodes,
-                        RadixSortHistograms = RadixSortHistograms,
-                    }.ScheduleParallel(workerCount, 1, dep);
-
-                    dep = new BVHRadixSortComputeBucketIndexRangesJob
-                    {
-                        WorkerCount = workerCount,
-                        RadixSortHistograms = RadixSortHistograms,
-                    }.Schedule(dep);
-
-                    dep = new BVHRadixScatterJob
-                    {
-                        WorkerCount = workerCount,
-                        Pass = pass,
-                        InputNodes = inputNodes,
-                        OutputNodes = outputNodes,
-                        RadixHistograms = RadixSortHistograms,
-                    }.ScheduleParallel(workerCount, 1, dep);
-                }
-            }
-            else
-            {
-                dep = new BVHSingleSortJob
-                {
-                    UnsortedNodes = NodesA,
-                }.Schedule(dep);
-
-                SortedNodesIsA = true;
-            }
-
-            if (parallel)
-            {
-                dep = new BVHPrecomputeHierarchyJob
-                {
-                    SortedNodes = SortedNodes,
-                    NodeLevelDatas = NodeLevelDatas,
-                }.Schedule(dep);
-
-                NativeReference<int> parallelWorkersLastWrittenLevel = new NativeReference<int>(Allocator.Domain);
-
-                dep = new BVHBuildHierarchyParallelJob
+                dep = new BVHRadixSortInitializePassJob
                 {
                     WorkerCount = workerCount,
-                    ParallelWorkersLastWrittenLevel = parallelWorkersLastWrittenLevel,
-                    SortedNodes = SortedNodes,
-                    NodeLevelDatas = NodeLevelDatas,
+                    InputNodes = inputNodes,
+                    OutputNodes = outputNodes,
+                    RadixSortHistograms = RadixSortHistograms,
+                }.Schedule(dep);
+
+                dep = new BVHRadixSortComputeBucketHistogramJob
+                {
+                    WorkerCount = workerCount,
+                    Pass = pass,
+                    Nodes = inputNodes,
+                    RadixSortHistograms = RadixSortHistograms,
                 }.ScheduleParallel(workerCount, 1, dep);
 
-                dep = new BVHBuildHierarchyFinalizeJob
+                dep = new BVHRadixSortComputeBucketIndexRangesJob
                 {
-                    ParallelWorkersLastWrittenLevel = parallelWorkersLastWrittenLevel,
-                    SortedNodes = SortedNodes,
-                    NodeLevelDatas = NodeLevelDatas,
+                    WorkerCount = workerCount,
+                    RadixSortHistograms = RadixSortHistograms,
                 }.Schedule(dep);
 
-                parallelWorkersLastWrittenLevel.Dispose(dep);
-            }
-            else
-            {
-                dep = new BVHBuildHierarchySingleJob
+                dep = new BVHRadixSortJob
                 {
-                    SortedNodes = SortedNodes,
-                    NodeLevelDatas = NodeLevelDatas,
-                }.Schedule(dep);
+                    WorkerCount = workerCount,
+                    Pass = pass,
+                    InputNodes = inputNodes,
+                    OutputNodes = outputNodes,
+                    RadixHistograms = RadixSortHistograms,
+                }.ScheduleParallel(workerCount, 1, dep);
             }
+
+            dep = new BVHPrecomputeHierarchyJob
+            {
+                SortedNodes = SortedNodes,
+                NodeLevelDatas = NodeLevelDatas,
+            }.Schedule(dep);
+
+            NativeReference<int> parallelWorkersLastWrittenLevel = new NativeReference<int>(Allocator.Domain);
+
+            dep = new BVHBuildHierarchyParallelJob
+            {
+                WorkerCount = workerCount,
+                ParallelWorkersLastWrittenLevel = parallelWorkersLastWrittenLevel,
+                SortedNodes = SortedNodes,
+                NodeLevelDatas = NodeLevelDatas,
+            }.ScheduleParallel(workerCount, 1, dep);
+
+            dep = new BVHBuildHierarchyFinalizeJob
+            {
+                ParallelWorkersLastWrittenLevel = parallelWorkersLastWrittenLevel,
+                SortedNodes = SortedNodes,
+                NodeLevelDatas = NodeLevelDatas,
+            }.Schedule(dep);
+
+            parallelWorkersLastWrittenLevel.Dispose(dep);
 
             return dep;
         }
@@ -556,18 +534,7 @@ namespace Trove.SpatialQueries
     }
 
     [BurstCompile]
-    public struct BVHSingleSortJob : IJob
-    {
-        public NativeList<BVHNode> UnsortedNodes;
-
-        public void Execute()
-        {
-            UnsortedNodes.Sort();
-        }
-    }
-
-    [BurstCompile]
-    internal struct BVHInitRadixSortInitializePassJob : IJob
+    internal struct BVHRadixSortInitializePassJob : IJob
     {
         public int WorkerCount;
         public NativeList<BVHNode> InputNodes;
@@ -671,7 +638,7 @@ namespace Trove.SpatialQueries
     }
 
     [BurstCompile]
-    internal unsafe struct BVHRadixScatterJob : IJobFor
+    internal unsafe struct BVHRadixSortJob : IJobFor
     {
         public int WorkerCount;
         public int Pass;
@@ -932,78 +899,6 @@ namespace Trove.SpatialQueries
                     nextLevelAddIndex++;
                 }
             }
-        }
-    }
-
-    [BurstCompile]
-    public struct BVHBuildHierarchySingleJob : IJob
-    {
-        public NativeList<BVHNode> SortedNodes;
-        public NativeList<NodeLevelData> NodeLevelDatas;
-
-        public void Execute()
-        {
-            if (SortedNodes.Length < 2)
-                return;
-
-            NodeLevelDatas.Clear();
-
-            // If nodes count is not even, add padding node
-            if (SortedNodes.Length % 2 != 0)
-            {
-                SortedNodes.Add(new BVHNode
-                {
-                    DataIndex = -1,
-                    AABB = SortedNodes[SortedNodes.Length - 1].AABB,
-                });
-            }
-
-            // Build node hierarchy
-            int nodesStartForLevel = 0;
-            int nodesCountForLevel = SortedNodes.Length;
-            while (nodesCountForLevel > 1)
-            {
-                NodeLevelDatas.Add(new NodeLevelData
-                {
-                    StartIndex = nodesStartForLevel,
-                    Count = nodesCountForLevel,
-                });
-
-                int nodesLengthBeforeAdd = SortedNodes.Length;
-
-                for (int i = nodesStartForLevel; i < nodesLengthBeforeAdd; i += 2)
-                {
-                    AABB aabb = SortedNodes[i].AABB;
-                    aabb.Include(SortedNodes[i + 1].AABB);
-
-                    SortedNodes.Add(new BVHNode
-                    {
-                        AABB = aabb,
-                        DataIndex = i,
-                    });
-                }
-
-                nodesStartForLevel = nodesLengthBeforeAdd;
-                nodesCountForLevel = SortedNodes.Length - nodesLengthBeforeAdd;
-
-                // If nodes count is not even amd is not root node, add padding node
-                if (nodesCountForLevel > 1 && nodesCountForLevel % 2 != 0)
-                {
-                    SortedNodes.Add(new BVHNode
-                    {
-                        DataIndex = -1,
-                        AABB = SortedNodes[SortedNodes.Length - 1].AABB,
-                    });
-                    nodesCountForLevel += 1;
-                }
-            }
-
-            // Add final level
-            NodeLevelDatas.Add(new NodeLevelData
-            {
-                StartIndex = nodesStartForLevel,
-                Count = nodesCountForLevel,
-            });
         }
     }
 }
