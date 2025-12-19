@@ -53,14 +53,16 @@ namespace Trove.SpatialQueries
             internal float3 Position;
             internal int CurrentNodeIndexInLevel;
             internal int CurrentLevel;
+            internal float MaxDistance;
 
             private float PrevDistance;
+            private bool InvalidatedForNextBatches;
 
             public bool NextResultsBatch(in BVH<TNodeData> bvh, ref UnsafeList<NearestNeighborResult> results, bool sortResults = true, float maxDistanceGrowthFactor = 2f)
             {
                 results.Clear();
                 
-                if (CurrentLevel >= bvh.NodeLevelDatas.Length)
+                if (CurrentLevel >= bvh.NodeLevelDatas.Length || InvalidatedForNextBatches)
                     return false;
                 
                 NodeLevelData levelData = bvh.NodeLevelDatas[CurrentLevel];
@@ -68,7 +70,18 @@ namespace Trove.SpatialQueries
                 // Do a query at the current distance
                 AABB currentNodeAABB = bvh.SortedNodes[levelData.StartIndex + CurrentNodeIndexInLevel].AABB;
                 float queryDistance = math.distance(currentNodeAABB.FarthestPoint(Position), Position);
-                queryDistance = math.min(queryDistance, queryDistance * maxDistanceGrowthFactor); 
+
+                if (CurrentLevel > 0)
+                {
+                    queryDistance = math.min(queryDistance, PrevDistance * maxDistanceGrowthFactor);
+                }
+
+                if (queryDistance > MaxDistance)
+                {
+                    InvalidatedForNextBatches = true;
+                    queryDistance = math.min(queryDistance, MaxDistance);
+                }
+                
                 bvh.QueryNearestNeighborsInternal(Position, queryDistance, ref results);
                 
                 if (sortResults)
@@ -415,7 +428,7 @@ namespace Trove.SpatialQueries
             }
         }
 
-        public unsafe bool CreateNearestNeighborsQuerier(float3 position, out NearestNeighborsQuerier querier)
+        public unsafe bool CreateNearestNeighborsQuerier(float3 position, out NearestNeighborsQuerier querier, float maxDistance = float.MaxValue)
         {
             // Project position onto Scene AABB if not inside it
             if (!SceneAABB.Value.Contains(position))
@@ -429,9 +442,6 @@ namespace Trove.SpatialQueries
             float deepestSmallestContainingNodeVolume = float.MaxValue;
             if (SortedNodes.Length >= 1)
             {
-                BVHNode* nodesPtr = SortedNodes.GetUnsafeReadOnlyPtr();
-                TNodeData* leafDataPtr = LeafNodeDatas.GetUnsafeReadOnlyPtr();
-                
                 // Calculate the morton code of the position
                 float3 sceneDimensions = SceneAABB.Value.Max - SceneAABB.Value.Min;
                 float3 normalizedPositionInScene = (position - SceneAABB.Value.Min) / sceneDimensions; 
@@ -482,6 +492,7 @@ namespace Trove.SpatialQueries
                         Position = position,
                         CurrentNodeIndexInLevel = indexOfClosestMorton,
                         CurrentLevel = 0,
+                        MaxDistance = maxDistance,
                     };
                     return true;
                 }
