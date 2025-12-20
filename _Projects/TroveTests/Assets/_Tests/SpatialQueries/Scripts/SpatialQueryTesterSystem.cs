@@ -185,7 +185,7 @@ partial struct SpatialQueryTesterSystem : ISystem
                     AABB aabb = AABB.FromCenterExtents(debugger.QueryPosition,
                         debugger.QueryExtents);
 
-                    BVH<TestNodeData>.DefaultQueryCollector collector = new BVH<TestNodeData>.DefaultQueryCollector(32, Allocator.Temp);
+                   DefaultQueryCollector<TestNodeData> collector = new DefaultQueryCollector<TestNodeData>(32, Allocator.Temp);
                     UnsafeList<TestNodeData> allQueryResults = new UnsafeList<TestNodeData>(128, Allocator.Temp);
 
                     _bvh.QueryAABB(aabb, ref collector);
@@ -229,9 +229,9 @@ partial struct SpatialQueryTesterSystem : ISystem
                     ComponentLookup<BVHTestObject> bvhTestObjectLookup = SystemAPI.GetComponentLookup<BVHTestObject>(true);
 
                     if (_bvh.CreateNearestNeighborsQuerier(debugger.QueryPosition,
-                            out BVH<TestNodeData>.NearestNeighborsQuerier nearestNeighborsQuerier))
+                            out NearestNeighborsQuerier<TestNodeData> nearestNeighborsQuerier))
                     {
-                        BVH<TestNodeData>.NearestNeighborResultCollector collector = new BVH<TestNodeData>.NearestNeighborResultCollector(32, Allocator.Temp);
+                        NearestNeighborResultCollector<TestNodeData> collector = new NearestNeighborResultCollector<TestNodeData>(32, Allocator.Temp);
                         
                         int counter = 0;
                         while (counter <= debugger.NearestNeighboursDebugLevel)
@@ -321,7 +321,7 @@ partial struct SpatialQueryTesterSystem : ISystem
         [ReadOnly]
         public BVH<TestNodeData> BVH;
 
-        private BVH<TestNodeData>.DefaultQueryCollector collector;
+        private DefaultQueryCollector<TestNodeData> collector;
         
         public void Execute(in LocalTransform transform, ref BVHTestObject test)
         {
@@ -334,7 +334,7 @@ partial struct SpatialQueryTesterSystem : ISystem
         {
             if (!collector.IsCreated)
             {
-                collector = new BVH<TestNodeData>.DefaultQueryCollector(32, Allocator.Temp);
+                collector = new DefaultQueryCollector<TestNodeData>(32, Allocator.Temp);
             }
             
             return true;

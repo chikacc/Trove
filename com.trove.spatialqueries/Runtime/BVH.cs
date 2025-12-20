@@ -47,6 +47,134 @@ namespace Trove.SpatialQueries
         public bool HasFoundResults();
     }
 
+    public struct DefaultQueryCollector<TNodeData> : IBVHQueryCollector<TNodeData>
+        where TNodeData : unmanaged
+    {
+        public UnsafeList<TNodeData> Results;
+        public bool IsCreated => Results.IsCreated;
+
+        public DefaultQueryCollector(int capacity, Allocator allocator)
+        {
+            Results = new UnsafeList<TNodeData>(capacity, allocator);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void OnBeginQuery()
+        {
+            Results.Clear();
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void AddNode(in TNodeData node)
+        {
+            Results.AddWithGrowFactor(node);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool HasFoundResults()
+        {
+            return Results.Length > 0;
+        }
+
+        public void Dispose()
+        {
+            Results.Dispose();
+        }
+    }
+
+    public struct NearestNeighborResultCollector<TNodeData> : IBVHQueryCollector<NearestNeighborResult<TNodeData>>
+        where TNodeData : unmanaged
+    {
+        public UnsafeList<NearestNeighborResult<TNodeData>> Results;
+
+        public bool IsCreated => Results.IsCreated;
+
+        public NearestNeighborResultCollector(int capacity, Allocator allocator)
+        {
+            Results = new UnsafeList<NearestNeighborResult<TNodeData>>(capacity, allocator);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void OnBeginQuery()
+        {
+            Results.Clear();
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void AddNode(in NearestNeighborResult<TNodeData> node)
+        {
+            Results.AddWithGrowFactor(node);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool HasFoundResults()
+        {
+            return Results.Length > 0;
+        }
+
+        public void Dispose()
+        {
+            Results.Dispose();
+        }
+    }
+
+    public struct NearestNeighborsQuerier<TNodeData> where TNodeData : unmanaged
+    {
+        internal float3 Position;
+        internal int CurrentNodeIndexInLevel;
+        internal int CurrentLevel;
+        internal float MaxDistance;
+
+        private bool InvalidatedForNextBatches;
+
+        public bool NextResultsBatch(in BVH<TNodeData> bvh, ref NearestNeighborResultCollector<TNodeData> collector, bool sortResults = true)
+        {
+            collector.OnBeginQuery();
+                
+            if (CurrentLevel >= bvh.NodeLevelDatas.Length || InvalidatedForNextBatches)
+                return false;
+                
+            NodeLevelData levelData = bvh.NodeLevelDatas[CurrentLevel];
+                
+            // Do a query at the current distance
+            AABB currentNodeAABB = bvh.SortedNodes[levelData.StartIndex + CurrentNodeIndexInLevel].AABB;
+            float queryDistance = math.distance(currentNodeAABB.FarthestPoint(Position), Position);
+
+            if (queryDistance > MaxDistance)
+            {
+                InvalidatedForNextBatches = true;
+                queryDistance = math.min(queryDistance, MaxDistance);
+            }
+                
+            bvh.QueryNearestNeighborsInternal(Position, queryDistance, ref collector);
+
+            if (collector.Results.Length == 0)
+                return false;
+                
+            if (sortResults)
+            {
+                collector.Results.Sort();
+            }
+                
+            CurrentLevel++;
+            CurrentNodeIndexInLevel /= 2; // parent node
+
+            return true;
+        }
+    }
+    
+    public struct NearestNeighborResult<TNodeData> : IComparable<NearestNeighborResult<TNodeData>>
+        where TNodeData : unmanaged
+    {
+        public TNodeData Data;
+        public float DistanceSq;
+
+        public int CompareTo(NearestNeighborResult<TNodeData> other)
+        {
+            return DistanceSq.CompareTo(other.DistanceSq);
+        }
+    }
+
     public struct BVH<TNodeData> where TNodeData : unmanaged
     {
         // Nodes A and B are used to ping pong between buffers during sorting.
@@ -59,131 +187,6 @@ namespace Trove.SpatialQueries
         internal NativeList<int> RadixSortHistograms;
 
         internal NativeList<BVHNode> SortedNodes => NodesA;
-
-        public struct DefaultQueryCollector : IBVHQueryCollector<TNodeData>
-        {
-            public UnsafeList<TNodeData> Results;
-            public bool IsCreated => Results.IsCreated;
-
-            public DefaultQueryCollector(int capacity, Allocator allocator)
-            {
-                Results = new UnsafeList<TNodeData>(capacity, allocator);
-            }
-
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public void OnBeginQuery()
-            {
-                Results.Clear();
-            }
-
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public void AddNode(in TNodeData node)
-            {
-                Results.AddWithGrowFactor(node);
-            }
-
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public bool HasFoundResults()
-            {
-                return Results.Length > 0;
-            }
-
-            public void Dispose()
-            {
-                Results.Dispose();
-            }
-        }
-
-        public struct NearestNeighborResultCollector : IBVHQueryCollector<NearestNeighborResult>
-        {
-            public UnsafeList<NearestNeighborResult> Results;
-
-            public bool IsCreated => Results.IsCreated;
-
-            public NearestNeighborResultCollector(int capacity, Allocator allocator)
-            {
-                Results = new UnsafeList<NearestNeighborResult>(capacity, allocator);
-            }
-
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public void OnBeginQuery()
-            {
-                Results.Clear();
-            }
-
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public void AddNode(in NearestNeighborResult node)
-            {
-                Results.AddWithGrowFactor(node);
-            }
-
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public bool HasFoundResults()
-            {
-                return Results.Length > 0;
-            }
-
-            public void Dispose()
-            {
-                Results.Dispose();
-            }
-        }
-
-        public struct NearestNeighborsQuerier
-        {
-            internal float3 Position;
-            internal int CurrentNodeIndexInLevel;
-            internal int CurrentLevel;
-            internal float MaxDistance;
-
-            private bool InvalidatedForNextBatches;
-
-            public bool NextResultsBatch(in BVH<TNodeData> bvh, ref NearestNeighborResultCollector collector, bool sortResults = true)
-            {
-                collector.OnBeginQuery();
-                
-                if (CurrentLevel >= bvh.NodeLevelDatas.Length || InvalidatedForNextBatches)
-                    return false;
-                
-                NodeLevelData levelData = bvh.NodeLevelDatas[CurrentLevel];
-                
-                // Do a query at the current distance
-                AABB currentNodeAABB = bvh.SortedNodes[levelData.StartIndex + CurrentNodeIndexInLevel].AABB;
-                float queryDistance = math.distance(currentNodeAABB.FarthestPoint(Position), Position);
-
-                if (queryDistance > MaxDistance)
-                {
-                    InvalidatedForNextBatches = true;
-                    queryDistance = math.min(queryDistance, MaxDistance);
-                }
-                
-                bvh.QueryNearestNeighborsInternal(Position, queryDistance, ref collector);
-
-                if (collector.Results.Length == 0)
-                    return false;
-                
-                if (sortResults)
-                {
-                    collector.Results.Sort();
-                }
-                
-                CurrentLevel++;
-                CurrentNodeIndexInLevel /= 2; // parent node
-
-                return true;
-            }
-        }
-        
-        public struct NearestNeighborResult : IComparable<NearestNeighborResult>
-        {
-            public TNodeData Data;
-            public float DistanceSq;
-
-            public int CompareTo(NearestNeighborResult other)
-            {
-                return DistanceSq.CompareTo(other.DistanceSq);
-            }
-        }
 
         public static BVH<TNodeData> Create(Allocator allocator, int initialElementsCapacity)
         {
@@ -394,14 +397,14 @@ namespace Trove.SpatialQueries
             }
         }
 
-        public bool QueryNearestNeighbor(float3 position, ref NearestNeighborResultCollector collector, 
-            out NearestNeighborResult nearestResult, float maxDistance = float.MaxValue)
+        public bool QueryNearestNeighbor(float3 position, ref NearestNeighborResultCollector<TNodeData> collector, 
+            out NearestNeighborResult<TNodeData> nearestResult, float maxDistance = float.MaxValue)
         {
-            if (CreateNearestNeighborsQuerier(position, out NearestNeighborsQuerier querier, maxDistance))
+            if (CreateNearestNeighborsQuerier(position, out NearestNeighborsQuerier<TNodeData> querier, maxDistance))
             {
                 if(querier.NextResultsBatch(in this, ref collector, false))
                 {
-                    UnsafeList<NearestNeighborResult> results = collector.Results;
+                    UnsafeList<NearestNeighborResult<TNodeData>> results = collector.Results;
                     nearestResult = results[0];
                     for (int i = 1; i < results.Length; i++)
                     {
@@ -418,7 +421,7 @@ namespace Trove.SpatialQueries
             return false;
         }
 
-        public unsafe bool CreateNearestNeighborsQuerier(float3 position, out NearestNeighborsQuerier querier, float maxDistance = float.MaxValue)
+        public unsafe bool CreateNearestNeighborsQuerier(float3 position, out NearestNeighborsQuerier<TNodeData> querier, float maxDistance = float.MaxValue)
         {
             // Project position onto Scene AABB if not inside it
             if (!SceneAABB.Value.Contains(position))
@@ -496,7 +499,7 @@ namespace Trove.SpatialQueries
                         }
                     }
                     
-                    querier = new NearestNeighborsQuerier
+                    querier = new NearestNeighborsQuerier<TNodeData>
                     {
                         Position = position,
                         CurrentNodeIndexInLevel = indexOfClosestMorton,
@@ -511,7 +514,7 @@ namespace Trove.SpatialQueries
             return false;
         }
 
-        internal unsafe void QueryNearestNeighborsInternal(in float3 position, float radius, ref NearestNeighborResultCollector collector)
+        internal unsafe void QueryNearestNeighborsInternal(in float3 position, float radius, ref NearestNeighborResultCollector<TNodeData> collector)
         {
             collector.OnBeginQuery();
         
@@ -528,7 +531,7 @@ namespace Trove.SpatialQueries
         
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal unsafe void QueryNearestNeighborsInternalRecursive(int nodeIndex, in float3 position, float radiusSq, BVHNode* nodesPtr, TNodeData* leafDataPtr,
-            int leafNodesCount, ref NearestNeighborResultCollector collector)
+            int leafNodesCount, ref NearestNeighborResultCollector<TNodeData> collector)
         {
             BVHNode node = nodesPtr[nodeIndex];
         
@@ -539,7 +542,7 @@ namespace Trove.SpatialQueries
             if (nodeIndex < leafNodesCount)
             {
                 // Leaf node - add result
-                collector.AddNode(new NearestNeighborResult
+                collector.AddNode(new NearestNeighborResult<TNodeData>
                 {
                     Data = leafDataPtr[node.DataIndex],
                     DistanceSq = node.AABB.DistanceSq(position),

@@ -29,7 +29,7 @@ Look at the comments in the template for further info.
 
 To query the BVH:
 * Get the BVH from its singleton entity (created in the BVH template)
-* Create a query collector. This is a struct that handles collecting results as they are processed. You can create your own collectors, but by default, you can just ust the `BVH<MyBVHNodeData>.DefaultQueryCollector` which simply collects all results.
+* Create a query collector. This is a struct that handles collecting results as they are processed. You can create your own collectors, but by default, you can just ust the `DefaultQueryCollector<MyBVHNodeData>` which simply collects all results.
 * Make queries with the query methods (ex: `BVH.QueryAABB()`, `BVH.QueryRay()`, `BVH.QuerySphere()`), taking a collector as parameter.
 
 he following code is an example of a `IJobEntity` that makes BVH queries:
@@ -44,7 +44,7 @@ public partial struct QueryBVHJob : IJobEntity, IJobEntityChunkBeginEnd
     
     // We cache a private query collector here, reusable throughout entity iteration.
     // This way we don't have to constantly re-allocate it.
-    private BVH<MyBVHNodeData>.DefaultQueryCollector collector;
+    private DefaultQueryCollector<MyBVHNodeData> collector;
     
     public void Execute(in LocalTransform transform, ref MyQuerier querier)
     {
@@ -59,7 +59,7 @@ public partial struct QueryBVHJob : IJobEntity, IJobEntityChunkBeginEnd
         // We create the collector only once per thread, and check for creation only once per chunk
         if (!collector.IsCreated)
         {
-            collector = new BVH<MyBVHNodeData>.DefaultQueryCollector(32, Allocator.Temp);
+            collector = new DefaultQueryCollector<MyBVHNodeData>(32, Allocator.Temp);
         }
         
         return true;
@@ -74,7 +74,7 @@ public partial struct QueryBVHJob : IJobEntity, IJobEntityChunkBeginEnd
 
 ### Querying nearest neighbors
 
-You can also query nearest neighbors efficiently, using a `_bvh.QueryNearestNeighbor` (for the closest neighbor) or `BVH<MyBVHNodeData>.NearestNeighborsQuerier` (for X amount of closest neighbors). Note that these rely on a `BVH<MyBVHNodeData>.NearestNeighborResultCollector`.
+You can also query nearest neighbors efficiently, using  `_bvh.QueryNearestNeighbor()` (for the closest neighbor) or a `NearestNeighborsQuerier<MyBVHNodeData>` (for X amount of closest neighbors). Note that these rely on a `NearestNeighborResultCollector<MyBVHNodeData>`.
 
 This code sample demonstrates their usage in a job:
 ```cs
@@ -87,7 +87,7 @@ public partial struct NearestNeighborsJob : IJobEntity
     
     // We cache a private query collector here, reusable throughout entity iteration.
     // This way we don't have to constantly re-allocate it.
-    private BVH<MyBVHNodeData>.NearestNeighborResultCollector collector;
+    private NearestNeighborResultCollector<MyBVHNodeData> collector;
     
     public void Execute(in LocalTransform transform, ref MyQuerier querier)
     {
@@ -129,7 +129,7 @@ public partial struct NearestNeighborsJob : IJobEntity
         // We create the collector only once per thread, and check for creation only once per chunk
         if (!collector.IsCreated)
         {
-            collector = new BVH<MyBVHNodeData>.NearestNeighborResultCollector(32, Allocator.Temp);
+            collector = new NearestNeighborResultCollector<MyBVHNodeData>(32, Allocator.Temp);
         }
         
         return true;
