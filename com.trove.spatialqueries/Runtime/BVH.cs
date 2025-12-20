@@ -35,6 +35,18 @@ namespace Trove.SpatialQueries
         public int Count;
     }
 
+    public interface IBVHQueryCollector<TNodeData> where TNodeData : struct
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void OnBeginQuery();
+        
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void AddNode(in TNodeData node);
+        
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool HasFoundResults();
+    }
+
     public struct BVH<TNodeData> where TNodeData : unmanaged
     {
         // Nodes A and B are used to ping pong between buffers during sorting.
@@ -48,6 +60,75 @@ namespace Trove.SpatialQueries
 
         internal NativeList<BVHNode> SortedNodes => NodesA;
 
+        public struct DefaultQueryCollector : IBVHQueryCollector<TNodeData>
+        {
+            public UnsafeList<TNodeData> Results;
+            public bool IsCreated => Results.IsCreated;
+
+            public DefaultQueryCollector(int capacity, Allocator allocator)
+            {
+                Results = new UnsafeList<TNodeData>(capacity, allocator);
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public void OnBeginQuery()
+            {
+                Results.Clear();
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public void AddNode(in TNodeData node)
+            {
+                Results.AddWithGrowFactor(node);
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public bool HasFoundResults()
+            {
+                return Results.Length > 0;
+            }
+
+            public void Dispose()
+            {
+                Results.Dispose();
+            }
+        }
+
+        public struct NearestNeighborResultCollector : IBVHQueryCollector<NearestNeighborResult>
+        {
+            public UnsafeList<NearestNeighborResult> Results;
+
+            public bool IsCreated => Results.IsCreated;
+
+            public NearestNeighborResultCollector(int capacity, Allocator allocator)
+            {
+                Results = new UnsafeList<NearestNeighborResult>(capacity, allocator);
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public void OnBeginQuery()
+            {
+                Results.Clear();
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public void AddNode(in NearestNeighborResult node)
+            {
+                Results.AddWithGrowFactor(node);
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public bool HasFoundResults()
+            {
+                return Results.Length > 0;
+            }
+
+            public void Dispose()
+            {
+                Results.Dispose();
+            }
+        }
+
         public struct NearestNeighborsQuerier
         {
             internal float3 Position;
@@ -57,9 +138,9 @@ namespace Trove.SpatialQueries
 
             private bool InvalidatedForNextBatches;
 
-            public bool NextResultsBatch(in BVH<TNodeData> bvh, ref UnsafeList<NearestNeighborResult> results, bool sortResults = true)
+            public bool NextResultsBatch(in BVH<TNodeData> bvh, ref NearestNeighborResultCollector collector, bool sortResults = true)
             {
-                results.Clear();
+                collector.OnBeginQuery();
                 
                 if (CurrentLevel >= bvh.NodeLevelDatas.Length || InvalidatedForNextBatches)
                     return false;
@@ -76,14 +157,14 @@ namespace Trove.SpatialQueries
                     queryDistance = math.min(queryDistance, MaxDistance);
                 }
                 
-                bvh.QueryNearestNeighborsInternal(Position, queryDistance, ref results);
+                bvh.QueryNearestNeighborsInternal(Position, queryDistance, ref collector);
 
-                if (results.Length == 0)
+                if (collector.Results.Length == 0)
                     return false;
                 
                 if (sortResults)
                 {
-                    results.Sort();
+                    collector.Results.Sort();
                 }
                 
                 CurrentLevel++;
@@ -96,11 +177,11 @@ namespace Trove.SpatialQueries
         public struct NearestNeighborResult : IComparable<NearestNeighborResult>
         {
             public TNodeData Data;
-            public float Distance;
+            public float DistanceSq;
 
             public int CompareTo(NearestNeighborResult other)
             {
-                return Distance.CompareTo(other.Distance);
+                return DistanceSq.CompareTo(other.DistanceSq);
             }
         }
 
@@ -183,29 +264,31 @@ namespace Trove.SpatialQueries
             LeafNodeDatas[atIndex] = nodeData;
         }
 
-        public unsafe bool QueryAABB(in AABB aabb, ref UnsafeList<TNodeData> results)
+        public unsafe bool QueryAABB<TCollector>(in AABB aabb, ref TCollector collector) 
+            where TCollector : unmanaged, IBVHQueryCollector<TNodeData>
         {
-            results.Clear();
-
+            collector.OnBeginQuery();
+        
             if (SortedNodes.Length < 1)
             {
                 return false;
             }
-
+        
             BVHNode* nodesPtr = SortedNodes.GetUnsafeReadOnlyPtr();
             TNodeData* leafDataPtr = LeafNodeDatas.GetUnsafeReadOnlyPtr();
-
-            QueryAABBRecursive(SortedNodes.Length - 1, aabb, nodesPtr, leafDataPtr, LeafNodeDatas.Length, ref results);
-
-            return results.Length > 0;
+        
+            QueryAABBRecursive(SortedNodes.Length - 1, aabb, nodesPtr, leafDataPtr, LeafNodeDatas.Length, ref collector);
+        
+            return collector.HasFoundResults();
         }
-
+        
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal unsafe void QueryAABBRecursive(int nodeIndex, in AABB aabb, BVHNode* nodesPtr, TNodeData* leafDataPtr,
-            int leafNodesCount, ref UnsafeList<TNodeData> results)
+        internal unsafe void QueryAABBRecursive<TCollector>(int nodeIndex, in AABB aabb, BVHNode* nodesPtr, TNodeData* leafDataPtr,
+            int leafNodesCount, ref TCollector collector)
+            where TCollector : unmanaged, IBVHQueryCollector<TNodeData>
         {
             BVHNode node = nodesPtr[nodeIndex];
-
+        
             // Early out if invalid or no overlap
             if (!aabb.OverlapsAABB(node.AABB) || !node.IsValid())
                 return;
@@ -213,81 +296,41 @@ namespace Trove.SpatialQueries
             if (nodeIndex < leafNodesCount)
             {
                 // Leaf node - add result
-                results.AddWithGrowFactor(leafDataPtr[node.DataIndex]);
+                collector.AddNode(leafDataPtr[node.DataIndex]);
             }
             else
             {
                 // Internal node - recurse to children
-                QueryAABBRecursive(node.DataIndex, aabb, nodesPtr, leafDataPtr, leafNodesCount, ref results);
-                QueryAABBRecursive(node.DataIndex + 1, aabb, nodesPtr, leafDataPtr, leafNodesCount, ref results);
+                QueryAABBRecursive(node.DataIndex, aabb, nodesPtr, leafDataPtr, leafNodesCount, ref collector);
+                QueryAABBRecursive(node.DataIndex + 1, aabb, nodesPtr, leafDataPtr, leafNodesCount, ref collector);
             }
         }
 
-        public unsafe bool QueryAABB(in AABB aabb, ref UnsafeList<int> workStack, ref UnsafeList<TNodeData> results)
+        public unsafe bool QuerySphere<TCollector>(in float3 position, float radius, ref TCollector collector)
+            where TCollector : unmanaged, IBVHQueryCollector<TNodeData>
         {
-            results.Clear();
-
+            collector.OnBeginQuery();
+        
             if (SortedNodes.Length < 1)
             {
                 return false;
             }
-
-            // Get raw pointers for faster access
+        
             BVHNode* nodesPtr = SortedNodes.GetUnsafeReadOnlyPtr();
             TNodeData* leafDataPtr = LeafNodeDatas.GetUnsafeReadOnlyPtr();
-
-            // Add root node to stack
-            workStack.Clear();
-            workStack.Add(SortedNodes.Length - 1);
-
-            // Fully process stack 1
-            for (int i = 0; i < workStack.Length; i++)
-            {
-                int nodeIndex = workStack[i];
-                BVHNode node = nodesPtr[nodeIndex];
-
-                // Early out if invalid or no overlap
-                if (!aabb.OverlapsAABB(node.AABB) || !node.IsValid())
-                    continue;
-
-                if (nodeIndex < LeafNodeDatas.Length)
-                {
-                    // Leaf node - add result directly
-                    results.AddWithGrowFactor(leafDataPtr[node.DataIndex]);
-                }
-                else
-                {
-                    workStack.AddWithGrowFactor(node.DataIndex);
-                    workStack.AddWithGrowFactor(node.DataIndex + 1);
-                }
-            }
-
-            return results.Length > 0;
+        
+            QuerySphereRecursive(SortedNodes.Length - 1, position, radius * radius, nodesPtr, leafDataPtr, LeafNodeDatas.Length, ref collector);
+        
+            return collector.HasFoundResults();
         }
-
-        public unsafe bool QuerySphere(in float3 position, float radius, ref UnsafeList<TNodeData> results)
-        {
-            results.Clear();
-
-            if (SortedNodes.Length < 1)
-            {
-                return false;
-            }
-
-            BVHNode* nodesPtr = SortedNodes.GetUnsafeReadOnlyPtr();
-            TNodeData* leafDataPtr = LeafNodeDatas.GetUnsafeReadOnlyPtr();
-
-            QuerySphereRecursive(SortedNodes.Length - 1, position, radius * radius, nodesPtr, leafDataPtr, LeafNodeDatas.Length, ref results);
-
-            return results.Length > 0;
-        }
-
+        
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal unsafe void QuerySphereRecursive(int nodeIndex, in float3 position, float radiusSq, BVHNode* nodesPtr, TNodeData* leafDataPtr,
-            int leafNodesCount, ref UnsafeList<TNodeData> results)
+        internal unsafe void QuerySphereRecursive<TCollector>(int nodeIndex, in float3 position, float radiusSq, BVHNode* nodesPtr, TNodeData* leafDataPtr,
+            int leafNodesCount, ref TCollector collector)
+            where TCollector : unmanaged, IBVHQueryCollector<TNodeData>
         {
             BVHNode node = nodesPtr[nodeIndex];
-
+        
             // Early out if invalid or no overlap
             if (!node.AABB.OverlapsSphere(position, radiusSq) || !node.IsValid())
                 return;
@@ -295,155 +338,78 @@ namespace Trove.SpatialQueries
             if (nodeIndex < leafNodesCount)
             {
                 // Leaf node - add result
-                results.AddWithGrowFactor(leafDataPtr[node.DataIndex]);
+                collector.AddNode(leafDataPtr[node.DataIndex]);
             }
             else
             {
                 // Internal node - recurse to children
-                QuerySphereRecursive(node.DataIndex, position, radiusSq, nodesPtr, leafDataPtr, leafNodesCount, ref results);
-                QuerySphereRecursive(node.DataIndex + 1, position, radiusSq, nodesPtr, leafDataPtr, leafNodesCount, ref results);
+                QuerySphereRecursive(node.DataIndex, position, radiusSq, nodesPtr, leafDataPtr, leafNodesCount, ref collector);
+                QuerySphereRecursive(node.DataIndex + 1, position, radiusSq, nodesPtr, leafDataPtr, leafNodesCount, ref collector);
             }
         }
 
-        public unsafe bool QuerySphere(in float3 position, float radius, ref UnsafeList<int> workStack, ref UnsafeList<TNodeData> results)
+        public unsafe bool QueryRay<TCollector>(float3 rayOrigin, float3 rayDirectionNormalized, float rayLength,
+            ref TCollector collector)
+            where TCollector : unmanaged, IBVHQueryCollector<TNodeData>
         {
-            results.Clear();
-
+            collector.OnBeginQuery();
+        
             if (SortedNodes.Length < 1)
             {
                 return false;
             }
-
-            // Get raw pointers for faster access
+        
             BVHNode* nodesPtr = SortedNodes.GetUnsafeReadOnlyPtr();
             TNodeData* leafDataPtr = LeafNodeDatas.GetUnsafeReadOnlyPtr();
-
-            // Add root node to stack
-            workStack.Clear();
-            workStack.Add(SortedNodes.Length - 1);
-            
-            float radiusSq = radius * radius;
-
-            // Fully process stack 1
-            for (int i = 0; i < workStack.Length; i++)
-            {
-                int nodeIndex = workStack[i];
-                BVHNode node = nodesPtr[nodeIndex];
-
-                // Early out if invalid or no overlap
-                if (!node.AABB.OverlapsSphere(position, radiusSq) || !node.IsValid())
-                    continue;
-
-                if (nodeIndex < LeafNodeDatas.Length)
-                {
-                    // Leaf node - add result directly
-                    results.AddWithGrowFactor(leafDataPtr[node.DataIndex]);
-                }
-                else
-                {
-                    workStack.AddWithGrowFactor(node.DataIndex);
-                    workStack.AddWithGrowFactor(node.DataIndex + 1);
-                }
-            }
-
-            return results.Length > 0;
-        }
-
-        public unsafe bool QueryRay(float3 rayOrigin, float3 rayDirectionNormalized, float rayLength,
-            ref UnsafeList<TNodeData> results)
-        {
-            results.Clear();
-
-            if (SortedNodes.Length < 1)
-            {
-                return false;
-            }
-
-            BVHNode* nodesPtr = SortedNodes.GetUnsafeReadOnlyPtr();
-            TNodeData* leafDataPtr = LeafNodeDatas.GetUnsafeReadOnlyPtr();
-
+        
             QueryRayRecursive(SortedNodes.Length - 1, rayOrigin, rayDirectionNormalized, rayLength, nodesPtr,
-                leafDataPtr, LeafNodeDatas.Length, ref results);
-
-            return results.Length > 0;
+                leafDataPtr, LeafNodeDatas.Length, ref collector);
+        
+            return collector.HasFoundResults();
         }
-
+        
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal unsafe void QueryRayRecursive(int nodeIndex, in float3 rayOrigin, in float3 rayDirectionNormalized,
-            float rayLength, BVHNode* nodesPtr, TNodeData* leafDataPtr, int leafNodesCount, ref UnsafeList<TNodeData> results)
+        internal unsafe void QueryRayRecursive<TCollector>(int nodeIndex, in float3 rayOrigin, in float3 rayDirectionNormalized,
+            float rayLength, BVHNode* nodesPtr, TNodeData* leafDataPtr, int leafNodesCount, ref TCollector collector)
+            where TCollector : unmanaged, IBVHQueryCollector<TNodeData>
         {
             BVHNode node = nodesPtr[nodeIndex];
-
+        
             // Early out if invalid or no intersection
             if (!node.AABB.IntersectsRay(rayOrigin, rayDirectionNormalized, rayLength) || !node.IsValid())
                 return;
-
+        
             if (nodeIndex < leafNodesCount)
             {
                 // Leaf node - add result
-                results.AddWithGrowFactor(leafDataPtr[node.DataIndex]);
+                collector.AddNode(leafDataPtr[node.DataIndex]);
             }
             else
             {
                 // Internal node - recurse to children
                 QueryRayRecursive(node.DataIndex, rayOrigin, rayDirectionNormalized, rayLength, nodesPtr, 
-                    leafDataPtr, leafNodesCount, ref results);
+                    leafDataPtr, leafNodesCount, ref collector);
                 QueryRayRecursive(node.DataIndex + 1, rayOrigin, rayDirectionNormalized, rayLength, nodesPtr,
-                    leafDataPtr, leafNodesCount, ref results);
+                    leafDataPtr, leafNodesCount, ref collector);
             }
         }
 
-        // TODO: review my AABB.IntersectsRay
-        public unsafe bool QueryRay(float3 rayOrigin, float3 rayDirectionNormalized, float rayLength,
-            ref UnsafeList<int> workStack, ref UnsafeList<TNodeData> results)
-        {
-            results.Clear();
-
-            if (SortedNodes.Length < 1)
-            {
-                return false;
-            }
-
-            // Get raw pointers for faster access
-            BVHNode* nodesPtr = SortedNodes.GetUnsafePtr();
-            TNodeData* leafDataPtr = LeafNodeDatas.GetUnsafePtr();
-
-            // Add root node to stack
-            workStack.Clear();
-            workStack.Add(SortedNodes.Length - 1);
-
-            for (int i = 0; i < workStack.Length; i++)
-            {
-                int nodeIndex = workStack[i];
-                BVHNode node = nodesPtr[nodeIndex];
-
-                // Early out if invalid or no intersection
-                if (!node.AABB.IntersectsRay(rayOrigin, rayDirectionNormalized, rayLength) || !node.IsValid())
-                    continue;
-
-                if (nodeIndex < LeafNodeDatas.Length)
-                {
-                    // Leaf node - add result directly
-                    results.AddWithGrowFactor(leafDataPtr[node.DataIndex]);
-                }
-                else
-                {
-                    workStack.AddWithGrowFactor(node.DataIndex);
-                    workStack.AddWithGrowFactor(node.DataIndex + 1);
-                }
-            }
-
-            return results.Length > 0;
-        }
-
-        public bool QueryNearestNeighbor(float3 position, ref UnsafeList<NearestNeighborResult> results, 
+        public bool QueryNearestNeighbor(float3 position, ref NearestNeighborResultCollector collector, 
             out NearestNeighborResult nearestResult, float maxDistance = float.MaxValue)
         {
             if (CreateNearestNeighborsQuerier(position, out NearestNeighborsQuerier querier, maxDistance))
             {
-                if(querier.NextResultsBatch(in this, ref results, true))
+                if(querier.NextResultsBatch(in this, ref collector, false))
                 {
+                    UnsafeList<NearestNeighborResult> results = collector.Results;
                     nearestResult = results[0];
+                    for (int i = 1; i < results.Length; i++)
+                    {
+                        if (results[i].DistanceSq < nearestResult.DistanceSq)
+                        {
+                            nearestResult = results[i];
+                        }
+                    }
                     return true;
                 }
             }
@@ -545,27 +511,27 @@ namespace Trove.SpatialQueries
             return false;
         }
 
-        internal unsafe void QueryNearestNeighborsInternal(in float3 position, float radius, ref UnsafeList<NearestNeighborResult> results)
+        internal unsafe void QueryNearestNeighborsInternal(in float3 position, float radius, ref NearestNeighborResultCollector collector)
         {
-            results.Clear();
-
+            collector.OnBeginQuery();
+        
             if (SortedNodes.Length < 1)
             {
                 return;
             }
-
+        
             BVHNode* nodesPtr = SortedNodes.GetUnsafeReadOnlyPtr();
             TNodeData* leafDataPtr = LeafNodeDatas.GetUnsafeReadOnlyPtr();
-
-            QueryNearestNeighborsInternalRecursive(SortedNodes.Length - 1, position, radius * radius, nodesPtr, leafDataPtr, LeafNodeDatas.Length, ref results);
+        
+            QueryNearestNeighborsInternalRecursive(SortedNodes.Length - 1, position, radius * radius, nodesPtr, leafDataPtr, LeafNodeDatas.Length, ref collector);
         }
-
+        
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal unsafe void QueryNearestNeighborsInternalRecursive(int nodeIndex, in float3 position, float radiusSq, BVHNode* nodesPtr, TNodeData* leafDataPtr,
-            int leafNodesCount, ref UnsafeList<NearestNeighborResult> results)
+            int leafNodesCount, ref NearestNeighborResultCollector collector)
         {
             BVHNode node = nodesPtr[nodeIndex];
-
+        
             // Early out if invalid or no overlap
             if (!node.AABB.OverlapsSphere(position, radiusSq) || !node.IsValid())
                 return;
@@ -573,17 +539,17 @@ namespace Trove.SpatialQueries
             if (nodeIndex < leafNodesCount)
             {
                 // Leaf node - add result
-                results.AddWithGrowFactor(new NearestNeighborResult
+                collector.AddNode(new NearestNeighborResult
                 {
                     Data = leafDataPtr[node.DataIndex],
-                    Distance = node.AABB.DistanceSq(position),
+                    DistanceSq = node.AABB.DistanceSq(position),
                 });
             }
             else
             {
                 // Internal node - recurse to children
-                QueryNearestNeighborsInternalRecursive(node.DataIndex, position, radiusSq, nodesPtr, leafDataPtr, leafNodesCount, ref results);
-                QueryNearestNeighborsInternalRecursive(node.DataIndex + 1, position, radiusSq, nodesPtr, leafDataPtr, leafNodesCount, ref results);
+                QueryNearestNeighborsInternalRecursive(node.DataIndex, position, radiusSq, nodesPtr, leafDataPtr, leafNodesCount, ref collector);
+                QueryNearestNeighborsInternalRecursive(node.DataIndex + 1, position, radiusSq, nodesPtr, leafDataPtr, leafNodesCount, ref collector);
             }
         }
         

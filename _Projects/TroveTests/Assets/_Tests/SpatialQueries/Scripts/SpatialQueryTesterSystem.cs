@@ -185,13 +185,13 @@ partial struct SpatialQueryTesterSystem : ISystem
                     AABB aabb = AABB.FromCenterExtents(debugger.QueryPosition,
                         debugger.QueryExtents);
 
-                    UnsafeList<TestNodeData> queryResults = new UnsafeList<TestNodeData>(32, Allocator.Temp);
+                    BVH<TestNodeData>.DefaultQueryCollector collector = new BVH<TestNodeData>.DefaultQueryCollector(32, Allocator.Temp);
                     UnsafeList<TestNodeData> allQueryResults = new UnsafeList<TestNodeData>(128, Allocator.Temp);
 
-                    _bvh.QueryAABB(aabb, ref queryResults);
-                    allQueryResults.AddRange(queryResults);
-                    _bvh.QueryRay(debugger.QueryPosition, debugger.QueryDirection, debugger.QueryLength, ref queryResults);
-                    allQueryResults.AddRange(queryResults);
+                    _bvh.QueryAABB(aabb, ref collector);
+                    allQueryResults.AddRange(collector.Results);
+                    _bvh.QueryRay(debugger.QueryPosition, debugger.QueryDirection, debugger.QueryLength, ref collector);
+                    allQueryResults.AddRange(collector.Results);
 
                     // Draw query ray
                     _debugDrawGroup.DrawRay(
@@ -231,20 +231,20 @@ partial struct SpatialQueryTesterSystem : ISystem
                     if (_bvh.CreateNearestNeighborsQuerier(debugger.QueryPosition,
                             out BVH<TestNodeData>.NearestNeighborsQuerier nearestNeighborsQuerier))
                     {
-                        UnsafeList<BVH<TestNodeData>.NearestNeighborResult> queryResults = new UnsafeList<BVH<TestNodeData>.NearestNeighborResult>(32, Allocator.Temp);
-
+                        BVH<TestNodeData>.NearestNeighborResultCollector collector = new BVH<TestNodeData>.NearestNeighborResultCollector(32, Allocator.Temp);
+                        
                         int counter = 0;
                         while (counter <= debugger.NearestNeighboursDebugLevel)
                         {
-                            nearestNeighborsQuerier.NextResultsBatch(in _bvh, ref queryResults, true);
+                            nearestNeighborsQuerier.NextResultsBatch(in _bvh, ref collector, true);
                             counter++;
 
                         }
                     
                         // Draw query results
-                        for (int i = 0; i < queryResults.Length; i++)
+                        for (int i = 0; i < collector.Results.Length; i++)
                         {
-                            Entity resultEntity = queryResults[i].Data.Entity;
+                            Entity resultEntity = collector.Results[i].Data.Entity;
                             if (localTransformLookup.TryGetComponent(resultEntity, out LocalTransform resultTransform) &&
                                 bvhTestObjectLookup.TryGetComponent(resultEntity, out BVHTestObject resultBVHTestObject))
                             {
@@ -257,9 +257,9 @@ partial struct SpatialQueryTesterSystem : ISystem
                         }
                         
                         // Draw actual closest
-                        if (queryResults.Length > 0 &&
-                            localTransformLookup.TryGetComponent(queryResults[0].Data.Entity, out LocalTransform closestTransform) &&
-                            bvhTestObjectLookup.TryGetComponent(queryResults[0].Data.Entity, out BVHTestObject closestBVHTestObject))
+                        if (collector.Results.Length > 0 &&
+                            localTransformLookup.TryGetComponent(collector.Results[0].Data.Entity, out LocalTransform closestTransform) &&
+                            bvhTestObjectLookup.TryGetComponent(collector.Results[0].Data.Entity, out BVHTestObject closestBVHTestObject))
                         {
                             _debugDrawGroup.DrawWireBox(
                                 closestTransform.Position, 
@@ -321,25 +321,20 @@ partial struct SpatialQueryTesterSystem : ISystem
         [ReadOnly]
         public BVH<TestNodeData> BVH;
 
-        private UnsafeList<int> workStack;
-        private UnsafeList<TestNodeData> results;
+        private BVH<TestNodeData>.DefaultQueryCollector collector;
         
         public void Execute(in LocalTransform transform, ref BVHTestObject test)
         {
             AABB aabb = AABB.FromCenterExtents(transform.Position, test.AABBExtents * transform.Scale * QueryScale);
-            BVH.QueryAABB(aabb, ref results);
-            test.QueryResultsStack = results.Length;
+            BVH.QueryAABB(aabb, ref collector);
+            test.QueryResultsStack = collector.Results.Length;
         }
 
         public bool OnChunkBegin(in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
         {
-            if (!workStack.IsCreated)
+            if (!collector.IsCreated)
             {
-                workStack = new UnsafeList<int>(32, Allocator.Temp);
-            }
-            if (!results.IsCreated)
-            {
-                results = new UnsafeList<TestNodeData>(32, Allocator.Temp);
+                collector = new BVH<TestNodeData>.DefaultQueryCollector(32, Allocator.Temp);
             }
             
             return true;
