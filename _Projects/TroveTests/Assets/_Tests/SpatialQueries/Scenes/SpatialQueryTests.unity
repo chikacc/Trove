@@ -285,7 +285,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: a6e5e53018f627441a75ba6768175e7e, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  QueryEnabled: 1
+  QueryEnabled: 0
   QueryExtents:
     x: 100
     y: 75

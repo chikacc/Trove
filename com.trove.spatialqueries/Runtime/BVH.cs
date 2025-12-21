@@ -1063,6 +1063,7 @@ namespace Trove.SpatialQueries
 
             int currentLevel = 0;
             NodeLevelData nodeLevelData = NodeLevelDatas[currentLevel];
+            BVHNode* sortedNodesPtr = SortedNodes.GetUnsafePtr();
 
             // We need each worker to start with a nodes count that is a power of 2, so that we'll have a guarantee
             // that there's an even amount of nodes to process at each level of the hierarchy other than the last
@@ -1082,10 +1083,10 @@ namespace Trove.SpatialQueries
                 // Process all nodes except last pair
                 for (int i = nodesStart; i < nodesEnd - 2; i += 2)
                 {
-                    AABB aabb = SortedNodes[i].AABB;
-                    aabb.Include(SortedNodes[i + 1].AABB);
+                    AABB aabb = sortedNodesPtr[i].AABB;
+                    aabb.Include(sortedNodesPtr[i + 1].AABB);
 
-                    SortedNodes[nextLevelAddIndex] = new BVHNode
+                    sortedNodesPtr[nextLevelAddIndex] = new BVHNode
                     {
                         AABB = aabb,
                         DataIndex = i,
@@ -1097,13 +1098,13 @@ namespace Trove.SpatialQueries
                 // Process last pair which might have exceptions
                 {
                     int lastPairIndex = nodesEnd - 2;
-                    AABB aabb = SortedNodes[lastPairIndex].AABB;
-                    if (SortedNodes[lastPairIndex + 1].IsValid())
+                    AABB aabb = sortedNodesPtr[lastPairIndex].AABB;
+                    if (sortedNodesPtr[lastPairIndex + 1].IsValid())
                     {
-                        aabb.Include(SortedNodes[lastPairIndex + 1].AABB);
+                        aabb.Include(sortedNodesPtr[lastPairIndex + 1].AABB);
                     }
 
-                    SortedNodes[nextLevelAddIndex] = new BVHNode
+                    sortedNodesPtr[nextLevelAddIndex] = new BVHNode
                     {
                         AABB = aabb,
                         DataIndex = lastPairIndex,
@@ -1184,4 +1185,279 @@ namespace Trove.SpatialQueries
             }
         }
     }
+    
+/*
+    [BurstCompile]
+    public unsafe struct BVHBuildSAHSplitHierarchyJob : IJob
+    {
+        public struct AABBAndCount
+        {
+            public AABB AABB;
+            public int Count;
+        }
+
+        public struct SplitInfo
+        {
+            public int Axis;
+            public float Position;
+            public float Cost;
+        }
+
+        public NativeReference<AABB> SceneAABB;
+        public NativeList<BVHLeafNode> LeafNodes;
+        public NativeList<BVHHierarchyNode> HierarchyNodes;
+
+        public UnsafeList<BVHLeafNode> LeafNodesUnsafe;
+
+        private const int LeavesPerNode = 4; 
+        private const int MaxDepth = 30;
+        private const int NbBins = 16;
+        private const float TraversalCost = 1f;
+        private const float IntersectCost = 1.5f;
+
+        public void Execute()
+        {
+            HierarchyNodes.Clear();
+            LeafNodesUnsafe = *LeafNodes.GetUnsafeList();
+
+            BVHHierarchyNode root = new BVHHierarchyNode
+            {
+                AABB = SceneAABB.Value,
+                ChildrenStartIndex = 0,
+                ChildrenLength = LeafNodesUnsafe.Length,
+            };
+
+            int depth = 0;
+            BuildRecursive(root, depth, -1, false);
+        }
+
+        private void BuildRecursive(BVHHierarchyNode node, int depth, int parentIndex, bool isLeftChild)
+        { 
+            // Add to hierarchy if few enough children, or if exceed depth limit
+            if (node.ChildrenLength < LeavesPerNode || depth >= MaxDepth)
+            {
+                AddNodeToHierarchy(ref node, parentIndex, isLeftChild, true, out _);
+                return;
+            }
+
+            FindSplit(in node, out SplitInfo split);
+
+            // If no split, add to hierarchy
+            if (split.Axis == -1)
+            {
+                AddNodeToHierarchy(ref node, parentIndex, isLeftChild, true, out _);
+                return;
+            }
+
+            // If the split would be less efficient than no split, add to hierarchy
+            // float leafCost = node.ChildrenLength * IntersectCost;
+            // if (split.Cost >= leafCost)
+            // {
+            //     Debug.Log("C");
+            //     AddNodeToHierarchy(ref node, parentIndex, isLeftChild, true, out _);
+            //     return;
+            // }
+
+            BVHHierarchyNode leftNode = new BVHHierarchyNode
+            {
+                AABB = AABB.GetEmpty(),
+                ChildrenStartIndex = node.ChildrenStartIndex,
+                ChildrenLength = 0,
+            };
+            BVHHierarchyNode rightNode = new BVHHierarchyNode
+            {
+                AABB = AABB.GetEmpty(),
+                ChildrenStartIndex = -1, // we don't know yet
+                ChildrenLength = 0,
+            };
+
+            // Reorder children in the buffer range so that it contains all left children, then all right children
+            {
+                for (int leftNodeIndex = node.ChildrenStartIndex;
+                     leftNodeIndex < node.ChildrenStartIndex + node.ChildrenLength;
+                     leftNodeIndex++)
+                {
+                    BVHLeafNode childFromLeft = LeafNodesUnsafe[leftNodeIndex];
+                    float centerOnAxisChlidFromLeft = childFromLeft.AABB.GetCenter()[split.Axis];
+
+                    if (centerOnAxisChlidFromLeft < split.Position)
+                    {
+                        leftNode.AABB.Include(childFromLeft.AABB);
+                        leftNode.ChildrenLength++;
+                    }
+                    else
+                    {
+                        // If node goes on the right, iterate nodes from the right until we find one that goes left.
+                        // Then swap them
+                        for (int rightNodeIndex = node.ChildrenStartIndex + node.ChildrenLength - 1 - rightNode.ChildrenLength;
+                             rightNodeIndex >= leftNodeIndex; rightNodeIndex--)
+                        {
+                            BVHLeafNode childFromRight = LeafNodesUnsafe[rightNodeIndex];
+                            float centerOnAxisChlidFromRight = childFromRight.AABB.GetCenter()[split.Axis];
+
+                            if (centerOnAxisChlidFromRight >= split.Position)
+                            {
+                                rightNode.AABB.Include(childFromRight.AABB);
+                                rightNode.ChildrenLength++;
+                            }
+                            else
+                            {
+                                // Swap
+                                BVHLeafNode tmpNode = childFromRight;
+                                LeafNodesUnsafe[rightNodeIndex] = childFromLeft;
+                                LeafNodesUnsafe[leftNodeIndex] = tmpNode;
+
+                                leftNode.AABB.Include(childFromRight.AABB);
+                                leftNode.ChildrenLength++;
+
+                                rightNode.AABB.Include(childFromLeft.AABB);
+                                rightNode.ChildrenLength++;
+
+                                break;
+                            }
+
+                            if (rightNodeIndex == leftNodeIndex)
+                            {
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Patch right node start index
+                rightNode.ChildrenStartIndex = leftNode.ChildrenStartIndex + leftNode.ChildrenLength;
+            }
+
+            // Add node to hierarchy
+            AddNodeToHierarchy(ref node, parentIndex, isLeftChild, false, out int addedIndex);
+
+            depth++;
+            BuildRecursive(leftNode, depth, addedIndex, true);
+            BuildRecursive(rightNode, depth, addedIndex, false);
+        }
+
+        // Find the best split on the best axis to separate the children
+        private void FindSplit(in BVHHierarchyNode parent, out SplitInfo bestSplit)
+        {
+            bestSplit = new SplitInfo
+            {
+                Cost = float.PositiveInfinity,
+                Axis = -1, // invalid
+            };
+
+            Span<AABBAndCount> bins = stackalloc AABBAndCount[NbBins];
+            Span<AABBAndCount> leftBinSums = stackalloc AABBAndCount[NbBins - 1];
+            Span<AABBAndCount> rightBinSums = stackalloc AABBAndCount[NbBins - 1];
+
+            // For x, y, z axis
+            for (int axis = 0; axis < 3; axis++)
+            {
+                // Clear bins
+                for (int i = 0; i < bins.Length; i++)
+                {
+                    bins[i] = default;
+                }
+
+                // Init bins
+                float parentMinOnAxis = parent.AABB.Min[axis];
+                float parentMaxOnAxis = parent.AABB.Max[axis];
+                float binValueRange = (parentMaxOnAxis - parentMinOnAxis) / bins.Length;
+
+                if (binValueRange <= 0f)
+                    continue;
+
+                // Compute children counts and AABBs for bins
+                for (int nodeIndex = parent.ChildrenStartIndex; nodeIndex < parent.ChildrenStartIndex + parent.ChildrenLength; nodeIndex++)
+                {
+                    AABB childAABB = LeafNodesUnsafe[nodeIndex].AABB;
+                    float centerOnAxis = childAABB.GetCenter()[axis];
+                    int binIndex = (int)math.floor((centerOnAxis - parentMinOnAxis) / binValueRange);
+                    binIndex = math.clamp(binIndex, 0, bins.Length - 1);
+                    bins[binIndex].Count++;
+                    bins[binIndex].AABB.Include(childAABB);
+                }
+
+                // Compute info about bins to the left of the end of each bin
+                AABBAndCount cummulativeAABBAndCount = new AABBAndCount
+                {
+                    Count = 0,
+                    AABB = AABB.GetEmpty(),
+                };
+                for (int i = 0; i < bins.Length - 2; i++)
+                {
+                    cummulativeAABBAndCount.Count += bins[i].Count;
+                    cummulativeAABBAndCount.AABB.Include(bins[i].AABB);
+                    leftBinSums[i] = cummulativeAABBAndCount;
+                }
+
+                // Compute info about bins to the right of the end of each bin
+                cummulativeAABBAndCount = new AABBAndCount
+                {
+                    Count = 0,
+                    AABB = AABB.GetEmpty(),
+                };
+                for (int i = bins.Length - 2; i >= 0; i--)
+                {
+                    cummulativeAABBAndCount.Count += bins[i + 1].Count;
+                    cummulativeAABBAndCount.AABB.Include(bins[i + 1].AABB);
+                    rightBinSums[i] = cummulativeAABBAndCount;
+                }
+
+                // Find the best bin to split at
+                float parentSurfaceArea = parent.AABB.CalculateSurfaceArea();
+                for (int i = 0; i < bins.Length - 2; i++)
+                {
+                    AABBAndCount leftBinSum = leftBinSums[i];
+                    AABBAndCount rightBinSum = rightBinSums[i];
+
+                    if (leftBinSum.Count == 0 || rightBinSum.Count == 0)
+                        continue;
+
+                    // Calculate the cost of separating at that bin. Basically, the best split is the split that
+                    // generates the best ratio of surface area to node count of the left and right children AABBs.
+                    // In other words, a high cost would be if we have very few nodes in a very large AABB.
+                    float leftSurfaceArea = leftBinSum.AABB.CalculateSurfaceArea();
+                    float rightSurfaceArea = rightBinSum.AABB.CalculateSurfaceArea();
+                    float leftProbability = leftSurfaceArea / parentSurfaceArea;
+                    float rightProbability = rightSurfaceArea / parentSurfaceArea;
+                    float splitCost = TraversalCost +
+                           (leftProbability * leftBinSum.Count * IntersectCost) +
+                           (rightProbability * rightBinSum.Count * IntersectCost);
+
+                    // Remember split if best so far
+                    if (splitCost < bestSplit.Cost)
+                    {
+                        bestSplit = new SplitInfo
+                        {
+                            Axis = axis,
+                            Cost = splitCost,
+                            Position = parentMinOnAxis + ((i + 1) * binValueRange), // We split at bin's end
+                        };
+                    }
+                }
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void AddNodeToHierarchy(ref BVHHierarchyNode node, int parentIndex, bool isLeft, bool containsLeafNodes, out int addedIndex)
+        {
+            addedIndex = HierarchyNodes.Length;
+            if (parentIndex >= 0)
+            {
+                ref BVHHierarchyNode parent =
+                    ref UnsafeUtility.ArrayElementAsRef<BVHHierarchyNode>(HierarchyNodes.GetUnsafePtr(), parentIndex);
+                if (isLeft)
+                {
+                    parent.LeftIndex = addedIndex;
+                }
+                else
+                {
+                    parent.RightIndex = addedIndex;
+                }
+            }
+
+            node.ContainsLeafNodes = containsLeafNodes ? (byte)1 : (byte)0;
+            HierarchyNodes.Add(node);
+        }
+    }*/
 }
