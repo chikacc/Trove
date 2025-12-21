@@ -188,7 +188,12 @@ partial struct SpatialQueryTesterSystem : ISystem
                    DefaultQueryCollector<TestNodeData> collector = new DefaultQueryCollector<TestNodeData>(32, Allocator.Temp);
                     UnsafeList<TestNodeData> allQueryResults = new UnsafeList<TestNodeData>(128, Allocator.Temp);
 
+                    float3 spherePos = debugger.QueryPosition + (debugger.QueryDirection * -200f);
+                    float sphereRadius = debugger.QueryExtents.x;
+                    
                     _bvh.QueryAABB(aabb, ref collector);
+                    allQueryResults.AddRange(collector.Results);
+                    _bvh.QuerySphere(spherePos, sphereRadius, ref collector);
                     allQueryResults.AddRange(collector.Results);
                     _bvh.QueryRay(debugger.QueryPosition, debugger.QueryDirection, debugger.QueryLength, ref collector);
                     allQueryResults.AddRange(collector.Results);
@@ -205,6 +210,13 @@ partial struct SpatialQueryTesterSystem : ISystem
                         debugger.QueryPosition, 
                         quaternion.identity,
                         debugger.QueryExtents, 
+                        UnityEngine.Color.blue);
+                    _debugDrawGroup.DrawWireSphere(
+                        spherePos, 
+                        quaternion.identity,
+                        sphereRadius, 
+                        8,
+                        8,
                         UnityEngine.Color.blue);
                     
                     // Draw query results
@@ -327,7 +339,7 @@ partial struct SpatialQueryTesterSystem : ISystem
         {
             AABB aabb = AABB.FromCenterExtents(transform.Position, test.AABBExtents * transform.Scale * QueryScale);
             BVH.QueryAABB(aabb, ref collector);
-            test.QueryResultsStack = collector.Results.Length;
+            test.QueryResults = collector.Results.Length;
         }
 
         public bool OnChunkBegin(in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)

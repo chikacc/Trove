@@ -8,8 +8,7 @@ public struct BVHTestObject : IComponentData
 {
     public float3 AABBExtents;
 
-    public int QueryResultsRecursive;
-    public int QueryResultsStack;
+    public int QueryResults;
 }
 
 class BVHTestObjectAuthoring : MonoBehaviour

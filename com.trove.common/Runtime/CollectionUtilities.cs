@@ -14,6 +14,107 @@ namespace Trove
         public int Length;
     }
 
+    public struct Stack
+    {
+        public int Start;
+        public int Length;
+        public int Capacity;
+
+        public Stack(int capacity)
+        {
+            Capacity = capacity;
+            Start = 0;
+            Length = 0;
+        }
+        
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe bool PushFirst<T>(T* stack, T value)
+            where T : unmanaged
+        {
+            if(Length >= Capacity)   
+                return false;
+
+            Length++;
+            Start = (Start - 1 + Capacity) % Capacity;
+            stack[Start] = value;
+            return true;
+        }
+        
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe bool PushLast<T>(T* stack, T value)
+            where T : unmanaged
+        {
+            if(Length >= Capacity)   
+                return false;
+
+            int writeIndex = (Start + Length) % Capacity;
+            stack[writeIndex] = value;
+            Length++;
+            return true;
+        }
+        
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe bool PopFirst<T>(T* stack, out T result)
+            where T : unmanaged
+        {
+            if (Length <= 0)
+            {
+                result = default;
+                return false;
+            }
+
+            Length--;
+            result = stack[Start];
+            Start = (Start + 1) % Capacity;
+            return true;
+        }
+        
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe bool PopLast<T>(T* stack, out T result)
+            where T : unmanaged
+        {
+            if (Length <= 0)
+            {
+                result = default;
+                return false;
+            }
+
+            Length--;
+            int readIndex = (Start + Length) % Capacity;
+            result = stack[readIndex];
+            return true;
+        }
+        
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe bool PeekFirst<T>(T* stack, out T result)
+            where T : unmanaged
+        {
+            if (Length <= 0)
+            {
+                result = default;
+                return false;
+            }
+
+            result = stack[Start];
+            return true;
+        }
+        
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe bool PeekLast<T>(T* stack, out T result)
+            where T : unmanaged
+        {
+            if (Length <= 0)
+            {
+                result = default;
+                return false;
+            }
+
+            int readIndex = (Start + Length - 1) % Capacity;
+            result = stack[readIndex];
+            return true;
+        }
+    }
+
     public static class CollectionUtilities
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
