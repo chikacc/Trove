@@ -5,6 +5,7 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Entities;
 using Unity.Mathematics;
+using UnityEngine;
 
 namespace Trove
 {
@@ -31,8 +32,10 @@ namespace Trove
         public unsafe bool PushFirst<T>(T* stack, T value)
             where T : unmanaged
         {
-            if(Length >= Capacity)   
+            if (Length >= Capacity)
+            {
                 return false;
+            }
 
             Length++;
             Start = (Start - 1 + Capacity) % Capacity;
@@ -44,8 +47,10 @@ namespace Trove
         public unsafe bool PushLast<T>(T* stack, T value)
             where T : unmanaged
         {
-            if(Length >= Capacity)   
+            if (Length >= Capacity)
+            {
                 return false;
+            }
 
             int writeIndex = (Start + Length) % Capacity;
             stack[writeIndex] = value;

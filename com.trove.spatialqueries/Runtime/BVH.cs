@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using NUnit.Framework;
 using Unity.Burst;
 using Unity.Collections;
@@ -11,11 +12,15 @@ using UnityEngine;
 
 namespace Trove.SpatialQueries
 {
+    [StructLayout(LayoutKind.Explicit)]
     public struct BVHNode : IComparable<BVHNode>
     {
-        public AABB AABB;
-        public int DataIndex; // For leaf nodes this is index of their data, but for parent nodes this is index of their first child
+        [FieldOffset(0)]
         public uint MortonCode;
+        [FieldOffset(4)]
+        public int DataIndex; // For leaf nodes this is index of their data, but for parent nodes this is index of their first child
+        [FieldOffset(8)]
+        public AABB AABB;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool IsValid()
@@ -158,7 +163,7 @@ namespace Trove.SpatialQueries
             }
                 
             CurrentLevel++;
-            CurrentNodeIndexInLevel /= 2; // parent node
+            CurrentNodeIndexInLevel /= BVHUtils.NbLeavesPerNode; // parent node
 
             return true;
         }
@@ -268,6 +273,21 @@ namespace Trove.SpatialQueries
             LeafNodeDatas[atIndex] = nodeData;
         }
 
+        public unsafe void AddNodesUnsafe(TNodeData* nodeDatas, AABB* aabbs, int count, int atIndex)
+        {
+            const int AABBsFieldOffset = 8;
+            
+            BVHNode* dstNodes = NodesA.GetUnsafePtr() + (long)atIndex;
+            AABB* dstAABB = (AABB*)((byte*)dstNodes + (long)AABBsFieldOffset); // AABBs are at fieldOffset 8
+            UnsafeUtility.MemCpyStride(
+                dstAABB, AABBsFieldOffset, 
+                aabbs, 0, 
+                UnsafeUtility.SizeOf<AABB>(), count);
+            
+            TNodeData* dstNodeDatas = LeafNodeDatas.GetUnsafePtr() + (long)atIndex;
+            UnsafeUtility.MemCpy(dstNodeDatas, nodeDatas, UnsafeUtility.SizeOf<TNodeData>() * count);
+        }
+
         public unsafe bool QueryAABB<TCollector>(in AABB aabb, ref TCollector collector) 
             where TCollector : unmanaged, IBVHQueryCollector<TNodeData>
         {
@@ -285,7 +305,7 @@ namespace Trove.SpatialQueries
             int leafNodesCount = LeafNodeDatas.Length;
 
             nodesStack.PushLast(nodesStackPtr, SortedNodes.Length - 1);  // start at root node;
-            while (nodesStack.PopFirst(nodesStackPtr, out int nodeIndex))
+            while (nodesStack.PopLast(nodesStackPtr, out int nodeIndex))
             {
                 BVHNode node = nodesPtr[nodeIndex];
 
@@ -298,8 +318,11 @@ namespace Trove.SpatialQueries
                 }
                 else
                 {
-                    nodesStack.PushFirst(nodesStackPtr, node.DataIndex);
-                    nodesStack.PushLast(nodesStackPtr, node.DataIndex + 1);
+                    nodesStack.PushLast(nodesStackPtr, node.DataIndex);
+                    for (int i = 1; i < BVHUtils.NbLeavesPerNode; i++)
+                    {
+                        nodesStack.PushFirst(nodesStackPtr, node.DataIndex + i);
+                    }
                 }
             }
 
@@ -325,7 +348,7 @@ namespace Trove.SpatialQueries
             float radiusSq = radius * radius;
 
             nodesStack.PushLast(nodesStackPtr, SortedNodes.Length - 1);  // start at root node;
-            while (nodesStack.PopFirst(nodesStackPtr, out int nodeIndex))
+            while (nodesStack.PopLast(nodesStackPtr, out int nodeIndex))
             {
                 BVHNode node = nodesPtr[nodeIndex];
 
@@ -338,8 +361,11 @@ namespace Trove.SpatialQueries
                 }
                 else
                 {
-                    nodesStack.PushFirst(nodesStackPtr, node.DataIndex);
-                    nodesStack.PushLast(nodesStackPtr, node.DataIndex + 1);
+                    nodesStack.PushLast(nodesStackPtr, node.DataIndex);
+                    for (int i = 1; i < BVHUtils.NbLeavesPerNode; i++)
+                    {
+                        nodesStack.PushFirst(nodesStackPtr, node.DataIndex + i);
+                    }
                 }
             }
 
@@ -364,7 +390,7 @@ namespace Trove.SpatialQueries
             int leafNodesCount = LeafNodeDatas.Length;
 
             nodesStack.PushLast(nodesStackPtr, SortedNodes.Length - 1);  // start at root node;
-            while (nodesStack.PopFirst(nodesStackPtr, out int nodeIndex))
+            while (nodesStack.PopLast(nodesStackPtr, out int nodeIndex))
             {
                 BVHNode node = nodesPtr[nodeIndex];
 
@@ -377,8 +403,11 @@ namespace Trove.SpatialQueries
                 }
                 else
                 {
-                    nodesStack.PushFirst(nodesStackPtr, node.DataIndex);
-                    nodesStack.PushLast(nodesStackPtr, node.DataIndex + 1);
+                    nodesStack.PushLast(nodesStackPtr, node.DataIndex);
+                    for (int i = 1; i < BVHUtils.NbLeavesPerNode; i++)
+                    {
+                        nodesStack.PushFirst(nodesStackPtr, node.DataIndex + i);
+                    }
                 }
             }
 
@@ -520,7 +549,7 @@ namespace Trove.SpatialQueries
             float radiusSq = radius * radius;
             
             nodesStack.PushLast(nodesStackPtr, SortedNodes.Length - 1);  // start at root node;
-            while (nodesStack.PopFirst(nodesStackPtr, out int nodeIndex))
+            while (nodesStack.PopLast(nodesStackPtr, out int nodeIndex))
             {
                 BVHNode node = nodesPtr[nodeIndex];
 
@@ -537,8 +566,11 @@ namespace Trove.SpatialQueries
                 }
                 else
                 {
-                    nodesStack.PushFirst(nodesStackPtr, node.DataIndex);
-                    nodesStack.PushLast(nodesStackPtr, node.DataIndex + 1);
+                    nodesStack.PushLast(nodesStackPtr, node.DataIndex);
+                    for (int i = 1; i < BVHUtils.NbLeavesPerNode; i++)
+                    {
+                        nodesStack.PushFirst(nodesStackPtr, node.DataIndex + i);
+                    }
                 }
             }
         }
@@ -680,6 +712,8 @@ namespace Trove.SpatialQueries
 
     internal static class BVHUtils
     {
+        internal const int NbLeavesPerNode = 4; 
+        
         internal const int RadixBits = 8;
         internal const int RadixSortBucketCount = 1 << RadixBits; // 256 values of a byte
         internal const int RadixSortPasses = 4; // 4 bytes of the morton uint
@@ -687,16 +721,15 @@ namespace Trove.SpatialQueries
         internal static int ComputeTotalNodesCountForEntries(int entriesCount)
         {
             // Make entries count even
-            if (entriesCount % 2 != 0)
+            if (entriesCount % BVHUtils.NbLeavesPerNode != 0)
             {
-                entriesCount++;
+                entriesCount += BVHUtils.NbLeavesPerNode - (entriesCount % BVHUtils.NbLeavesPerNode);
             }
 
             float entriesCountFloat = (float)entriesCount;
-
             while (entriesCountFloat > 1f)
             {
-                entriesCountFloat *= 0.5f;
+                entriesCountFloat /= BVHUtils.NbLeavesPerNode;
                 entriesCount += (int)math.ceil(entriesCountFloat);
             }
 
@@ -973,7 +1006,7 @@ namespace Trove.SpatialQueries
         {
             NodeLevelDatas.Clear();
 
-            if (SortedNodes.Length < 2)
+            if (SortedNodes.Length < BVHUtils.NbLeavesPerNode)
             {
                 if (SortedNodes.Length > 0)
                 {
@@ -989,15 +1022,19 @@ namespace Trove.SpatialQueries
 
             UnsafeList<int> paddingNodeIndices = new UnsafeList<int>(64, Allocator.Temp);
 
-            // If nodes count is not even, add padding node
-            if (SortedNodes.Length % 2 != 0)
+            // If nodes count is not dividable by nbLeaves, add padding node
+            int paddingNodesNeeded = BVHUtils.NbLeavesPerNode - (SortedNodes.Length % BVHUtils.NbLeavesPerNode);
+            if (paddingNodesNeeded != BVHUtils.NbLeavesPerNode)
             {
-                paddingNodeIndices.Add(SortedNodes.Length);
-                SortedNodes.Add(new BVHNode
+                for (int i = 0; i < paddingNodesNeeded; i++)
                 {
-                    DataIndex = -1,
-                    AABB = AABB.GetEmpty(),
-                });
+                    paddingNodeIndices.Add(SortedNodes.Length);
+                    SortedNodes.Add(new BVHNode
+                    {
+                        DataIndex = -1,
+                        AABB = AABB.GetEmpty(),
+                    });
+                }
             }
 
             NodeLevelDatas.Add(new NodeLevelData
@@ -1011,13 +1048,17 @@ namespace Trove.SpatialQueries
             int workingLengthForLevel = SortedNodes.Length;
             while (workingLengthForLevel > 1)
             {
-                workingLengthForLevel /= 2; // ok because we always ensure our workinglength is dividable by 2
+                workingLengthForLevel /= BVHUtils.NbLeavesPerNode; // ok because we always ensure our workinglength is dividable by nbLeaves
 
-                // Ensure our workinglength is dividable by 2
-                if (workingLengthForLevel > 1 && workingLengthForLevel % 2 != 0)
+                // Ensure our workinglength is dividable by nbLeaves
+                paddingNodesNeeded = BVHUtils.NbLeavesPerNode - (workingLengthForLevel % BVHUtils.NbLeavesPerNode);
+                if (workingLengthForLevel > 1 && paddingNodesNeeded != BVHUtils.NbLeavesPerNode)
                 {
-                    paddingNodeIndices.AddWithGrowFactor(startIndexCounter + workingLengthForLevel);
-                    workingLengthForLevel++;
+                    for (int i = 0; i < paddingNodesNeeded; i++)
+                    {
+                        paddingNodeIndices.AddWithGrowFactor(startIndexCounter + workingLengthForLevel);
+                        workingLengthForLevel++;
+                    }
                 }
 
                 NodeLevelDatas.Add(new NodeLevelData
@@ -1027,7 +1068,6 @@ namespace Trove.SpatialQueries
                 });
 
                 startIndexCounter += workingLengthForLevel;
-
             }
 
             // Resize nodes for full hierarchy
@@ -1058,33 +1098,45 @@ namespace Trove.SpatialQueries
 
         public void Execute(int workerIndex)
         {
-            if (SortedNodes.Length < 2)
+            if (SortedNodes.Length < BVHUtils.NbLeavesPerNode)
                 return;
 
             int currentLevel = 0;
             NodeLevelData nodeLevelData = NodeLevelDatas[currentLevel];
             BVHNode* sortedNodesPtr = SortedNodes.GetUnsafePtr();
 
-            // We need each worker to start with a nodes count that is a power of 2, so that we'll have a guarantee
+            // We need each worker to start with a nodes count that is a power of NbLeaves, so that we'll have a guarantee
             // that there's an even amount of nodes to process at each level of the hierarchy other than the last
             int nodesLength = MathUtilities.DivideIntCeil(nodeLevelData.Count, WorkerCount);
-            nodesLength = math.ceilpow2(nodesLength);
+            int powOfNbLeaves = 1;
+            while (true)
+            {
+                powOfNbLeaves *= BVHUtils.NbLeavesPerNode;
+                if (powOfNbLeaves > nodesLength)
+                {
+                    nodesLength = powOfNbLeaves;
+                    break;
+                }
+            }
 
             int nodesStart = nodeLevelData.StartIndex + (workerIndex * nodesLength);
             if (nodesStart >= nodeLevelData.StartIndex + nodeLevelData.Count)
                 return;
 
             int nodesEnd = math.min(nodeLevelData.StartIndex + nodeLevelData.Count, nodesStart + nodesLength);
-            int nextLevelAddIndex = NodeLevelDatas[currentLevel + 1].StartIndex + (workerIndex * nodesLength / 2);
+            int nextLevelAddIndex = NodeLevelDatas[currentLevel + 1].StartIndex + (workerIndex * nodesLength / BVHUtils.NbLeavesPerNode);
 
             // For each level
-            while (nodesLength >= 2)
+            while (nodesLength >= BVHUtils.NbLeavesPerNode)
             {
                 // Process all nodes except last pair
-                for (int i = nodesStart; i < nodesEnd - 2; i += 2)
+                for (int i = nodesStart; i < nodesEnd - BVHUtils.NbLeavesPerNode; i += BVHUtils.NbLeavesPerNode)
                 {
                     AABB aabb = sortedNodesPtr[i].AABB;
-                    aabb.Include(sortedNodesPtr[i + 1].AABB);
+                    for (int j = 1; j < BVHUtils.NbLeavesPerNode; j++)
+                    {
+                        aabb.Include(sortedNodesPtr[i + j].AABB);
+                    }
 
                     sortedNodesPtr[nextLevelAddIndex] = new BVHNode
                     {
@@ -1097,11 +1149,14 @@ namespace Trove.SpatialQueries
 
                 // Process last pair which might have exceptions
                 {
-                    int lastPairIndex = nodesEnd - 2;
+                    int lastPairIndex = nodesEnd - BVHUtils.NbLeavesPerNode;
                     AABB aabb = sortedNodesPtr[lastPairIndex].AABB;
-                    if (sortedNodesPtr[lastPairIndex + 1].IsValid())
+                    for (int j = 1; j < BVHUtils.NbLeavesPerNode; j++)
                     {
-                        aabb.Include(sortedNodesPtr[lastPairIndex + 1].AABB);
+                        if (sortedNodesPtr[lastPairIndex + j].IsValid())
+                        {
+                            aabb.Include(sortedNodesPtr[lastPairIndex + j].AABB);
+                        }
                     }
 
                     sortedNodesPtr[nextLevelAddIndex] = new BVHNode
@@ -1115,12 +1170,12 @@ namespace Trove.SpatialQueries
                 // Reached end of level
                 currentLevel++;
                 nodeLevelData = NodeLevelDatas[currentLevel];
-                nodesLength /= 2;
+                nodesLength /= BVHUtils.NbLeavesPerNode;
                 nodesStart = nodeLevelData.StartIndex + (workerIndex * nodesLength);
                 nodesEnd = math.min(nodeLevelData.StartIndex + nodeLevelData.Count, nodesStart + nodesLength);
                 if (currentLevel + 1 < NodeLevelDatas.Length)
                 {
-                    nextLevelAddIndex = NodeLevelDatas[currentLevel + 1].StartIndex + (workerIndex * nodesLength / 2);
+                    nextLevelAddIndex = NodeLevelDatas[currentLevel + 1].StartIndex + (workerIndex * nodesLength / BVHUtils.NbLeavesPerNode);
                 }
             }
 
@@ -1140,7 +1195,7 @@ namespace Trove.SpatialQueries
 
         public void Execute()
         {
-            if (SortedNodes.Length < 2)
+            if (SortedNodes.Length < BVHUtils.NbLeavesPerNode)
                 return;
 
             // Process the last few levels after all parallel workers ended on their last two top-level nodes
@@ -1152,10 +1207,13 @@ namespace Trove.SpatialQueries
 
                 int nodesEnd = nodeLevelData.StartIndex + nodeLevelData.Count;
 
-                for (int i = nodeLevelData.StartIndex; i < nodesEnd - 2; i += 2)
+                for (int i = nodeLevelData.StartIndex; i < nodesEnd - BVHUtils.NbLeavesPerNode; i += BVHUtils.NbLeavesPerNode)
                 {
                     AABB aabb = SortedNodes[i].AABB;
-                    aabb.Include(SortedNodes[i + 1].AABB);
+                    for (int j = 1; j < BVHUtils.NbLeavesPerNode; j++)
+                    {
+                        aabb.Include(SortedNodes[i + j].AABB);
+                    }
                     
                     SortedNodes[nextLevelAddIndex] = new BVHNode
                     {
@@ -1168,11 +1226,14 @@ namespace Trove.SpatialQueries
 
                 // Process last pair which might have exceptions
                 {
-                    int lastPairIndex = nodesEnd - 2;
+                    int lastPairIndex = nodesEnd - BVHUtils.NbLeavesPerNode;
                     AABB aabb = SortedNodes[lastPairIndex].AABB;
-                    if (SortedNodes[lastPairIndex + 1].IsValid())
+                    for (int j = 1; j < BVHUtils.NbLeavesPerNode; j++)
                     {
-                        aabb.Include(SortedNodes[lastPairIndex + 1].AABB);
+                        if (SortedNodes[lastPairIndex + j].IsValid())
+                        {
+                            aabb.Include(SortedNodes[lastPairIndex + j].AABB);
+                        }
                     }
 
                     SortedNodes[nextLevelAddIndex] = new BVHNode
@@ -1185,279 +1246,4 @@ namespace Trove.SpatialQueries
             }
         }
     }
-    
-/*
-    [BurstCompile]
-    public unsafe struct BVHBuildSAHSplitHierarchyJob : IJob
-    {
-        public struct AABBAndCount
-        {
-            public AABB AABB;
-            public int Count;
-        }
-
-        public struct SplitInfo
-        {
-            public int Axis;
-            public float Position;
-            public float Cost;
-        }
-
-        public NativeReference<AABB> SceneAABB;
-        public NativeList<BVHLeafNode> LeafNodes;
-        public NativeList<BVHHierarchyNode> HierarchyNodes;
-
-        public UnsafeList<BVHLeafNode> LeafNodesUnsafe;
-
-        private const int LeavesPerNode = 4; 
-        private const int MaxDepth = 30;
-        private const int NbBins = 16;
-        private const float TraversalCost = 1f;
-        private const float IntersectCost = 1.5f;
-
-        public void Execute()
-        {
-            HierarchyNodes.Clear();
-            LeafNodesUnsafe = *LeafNodes.GetUnsafeList();
-
-            BVHHierarchyNode root = new BVHHierarchyNode
-            {
-                AABB = SceneAABB.Value,
-                ChildrenStartIndex = 0,
-                ChildrenLength = LeafNodesUnsafe.Length,
-            };
-
-            int depth = 0;
-            BuildRecursive(root, depth, -1, false);
-        }
-
-        private void BuildRecursive(BVHHierarchyNode node, int depth, int parentIndex, bool isLeftChild)
-        { 
-            // Add to hierarchy if few enough children, or if exceed depth limit
-            if (node.ChildrenLength < LeavesPerNode || depth >= MaxDepth)
-            {
-                AddNodeToHierarchy(ref node, parentIndex, isLeftChild, true, out _);
-                return;
-            }
-
-            FindSplit(in node, out SplitInfo split);
-
-            // If no split, add to hierarchy
-            if (split.Axis == -1)
-            {
-                AddNodeToHierarchy(ref node, parentIndex, isLeftChild, true, out _);
-                return;
-            }
-
-            // If the split would be less efficient than no split, add to hierarchy
-            // float leafCost = node.ChildrenLength * IntersectCost;
-            // if (split.Cost >= leafCost)
-            // {
-            //     Debug.Log("C");
-            //     AddNodeToHierarchy(ref node, parentIndex, isLeftChild, true, out _);
-            //     return;
-            // }
-
-            BVHHierarchyNode leftNode = new BVHHierarchyNode
-            {
-                AABB = AABB.GetEmpty(),
-                ChildrenStartIndex = node.ChildrenStartIndex,
-                ChildrenLength = 0,
-            };
-            BVHHierarchyNode rightNode = new BVHHierarchyNode
-            {
-                AABB = AABB.GetEmpty(),
-                ChildrenStartIndex = -1, // we don't know yet
-                ChildrenLength = 0,
-            };
-
-            // Reorder children in the buffer range so that it contains all left children, then all right children
-            {
-                for (int leftNodeIndex = node.ChildrenStartIndex;
-                     leftNodeIndex < node.ChildrenStartIndex + node.ChildrenLength;
-                     leftNodeIndex++)
-                {
-                    BVHLeafNode childFromLeft = LeafNodesUnsafe[leftNodeIndex];
-                    float centerOnAxisChlidFromLeft = childFromLeft.AABB.GetCenter()[split.Axis];
-
-                    if (centerOnAxisChlidFromLeft < split.Position)
-                    {
-                        leftNode.AABB.Include(childFromLeft.AABB);
-                        leftNode.ChildrenLength++;
-                    }
-                    else
-                    {
-                        // If node goes on the right, iterate nodes from the right until we find one that goes left.
-                        // Then swap them
-                        for (int rightNodeIndex = node.ChildrenStartIndex + node.ChildrenLength - 1 - rightNode.ChildrenLength;
-                             rightNodeIndex >= leftNodeIndex; rightNodeIndex--)
-                        {
-                            BVHLeafNode childFromRight = LeafNodesUnsafe[rightNodeIndex];
-                            float centerOnAxisChlidFromRight = childFromRight.AABB.GetCenter()[split.Axis];
-
-                            if (centerOnAxisChlidFromRight >= split.Position)
-                            {
-                                rightNode.AABB.Include(childFromRight.AABB);
-                                rightNode.ChildrenLength++;
-                            }
-                            else
-                            {
-                                // Swap
-                                BVHLeafNode tmpNode = childFromRight;
-                                LeafNodesUnsafe[rightNodeIndex] = childFromLeft;
-                                LeafNodesUnsafe[leftNodeIndex] = tmpNode;
-
-                                leftNode.AABB.Include(childFromRight.AABB);
-                                leftNode.ChildrenLength++;
-
-                                rightNode.AABB.Include(childFromLeft.AABB);
-                                rightNode.ChildrenLength++;
-
-                                break;
-                            }
-
-                            if (rightNodeIndex == leftNodeIndex)
-                            {
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                // Patch right node start index
-                rightNode.ChildrenStartIndex = leftNode.ChildrenStartIndex + leftNode.ChildrenLength;
-            }
-
-            // Add node to hierarchy
-            AddNodeToHierarchy(ref node, parentIndex, isLeftChild, false, out int addedIndex);
-
-            depth++;
-            BuildRecursive(leftNode, depth, addedIndex, true);
-            BuildRecursive(rightNode, depth, addedIndex, false);
-        }
-
-        // Find the best split on the best axis to separate the children
-        private void FindSplit(in BVHHierarchyNode parent, out SplitInfo bestSplit)
-        {
-            bestSplit = new SplitInfo
-            {
-                Cost = float.PositiveInfinity,
-                Axis = -1, // invalid
-            };
-
-            Span<AABBAndCount> bins = stackalloc AABBAndCount[NbBins];
-            Span<AABBAndCount> leftBinSums = stackalloc AABBAndCount[NbBins - 1];
-            Span<AABBAndCount> rightBinSums = stackalloc AABBAndCount[NbBins - 1];
-
-            // For x, y, z axis
-            for (int axis = 0; axis < 3; axis++)
-            {
-                // Clear bins
-                for (int i = 0; i < bins.Length; i++)
-                {
-                    bins[i] = default;
-                }
-
-                // Init bins
-                float parentMinOnAxis = parent.AABB.Min[axis];
-                float parentMaxOnAxis = parent.AABB.Max[axis];
-                float binValueRange = (parentMaxOnAxis - parentMinOnAxis) / bins.Length;
-
-                if (binValueRange <= 0f)
-                    continue;
-
-                // Compute children counts and AABBs for bins
-                for (int nodeIndex = parent.ChildrenStartIndex; nodeIndex < parent.ChildrenStartIndex + parent.ChildrenLength; nodeIndex++)
-                {
-                    AABB childAABB = LeafNodesUnsafe[nodeIndex].AABB;
-                    float centerOnAxis = childAABB.GetCenter()[axis];
-                    int binIndex = (int)math.floor((centerOnAxis - parentMinOnAxis) / binValueRange);
-                    binIndex = math.clamp(binIndex, 0, bins.Length - 1);
-                    bins[binIndex].Count++;
-                    bins[binIndex].AABB.Include(childAABB);
-                }
-
-                // Compute info about bins to the left of the end of each bin
-                AABBAndCount cummulativeAABBAndCount = new AABBAndCount
-                {
-                    Count = 0,
-                    AABB = AABB.GetEmpty(),
-                };
-                for (int i = 0; i < bins.Length - 2; i++)
-                {
-                    cummulativeAABBAndCount.Count += bins[i].Count;
-                    cummulativeAABBAndCount.AABB.Include(bins[i].AABB);
-                    leftBinSums[i] = cummulativeAABBAndCount;
-                }
-
-                // Compute info about bins to the right of the end of each bin
-                cummulativeAABBAndCount = new AABBAndCount
-                {
-                    Count = 0,
-                    AABB = AABB.GetEmpty(),
-                };
-                for (int i = bins.Length - 2; i >= 0; i--)
-                {
-                    cummulativeAABBAndCount.Count += bins[i + 1].Count;
-                    cummulativeAABBAndCount.AABB.Include(bins[i + 1].AABB);
-                    rightBinSums[i] = cummulativeAABBAndCount;
-                }
-
-                // Find the best bin to split at
-                float parentSurfaceArea = parent.AABB.CalculateSurfaceArea();
-                for (int i = 0; i < bins.Length - 2; i++)
-                {
-                    AABBAndCount leftBinSum = leftBinSums[i];
-                    AABBAndCount rightBinSum = rightBinSums[i];
-
-                    if (leftBinSum.Count == 0 || rightBinSum.Count == 0)
-                        continue;
-
-                    // Calculate the cost of separating at that bin. Basically, the best split is the split that
-                    // generates the best ratio of surface area to node count of the left and right children AABBs.
-                    // In other words, a high cost would be if we have very few nodes in a very large AABB.
-                    float leftSurfaceArea = leftBinSum.AABB.CalculateSurfaceArea();
-                    float rightSurfaceArea = rightBinSum.AABB.CalculateSurfaceArea();
-                    float leftProbability = leftSurfaceArea / parentSurfaceArea;
-                    float rightProbability = rightSurfaceArea / parentSurfaceArea;
-                    float splitCost = TraversalCost +
-                           (leftProbability * leftBinSum.Count * IntersectCost) +
-                           (rightProbability * rightBinSum.Count * IntersectCost);
-
-                    // Remember split if best so far
-                    if (splitCost < bestSplit.Cost)
-                    {
-                        bestSplit = new SplitInfo
-                        {
-                            Axis = axis,
-                            Cost = splitCost,
-                            Position = parentMinOnAxis + ((i + 1) * binValueRange), // We split at bin's end
-                        };
-                    }
-                }
-            }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void AddNodeToHierarchy(ref BVHHierarchyNode node, int parentIndex, bool isLeft, bool containsLeafNodes, out int addedIndex)
-        {
-            addedIndex = HierarchyNodes.Length;
-            if (parentIndex >= 0)
-            {
-                ref BVHHierarchyNode parent =
-                    ref UnsafeUtility.ArrayElementAsRef<BVHHierarchyNode>(HierarchyNodes.GetUnsafePtr(), parentIndex);
-                if (isLeft)
-                {
-                    parent.LeftIndex = addedIndex;
-                }
-                else
-                {
-                    parent.RightIndex = addedIndex;
-                }
-            }
-
-            node.ContainsLeafNodes = containsLeafNodes ? (byte)1 : (byte)0;
-            HierarchyNodes.Add(node);
-        }
-    }*/
 }
