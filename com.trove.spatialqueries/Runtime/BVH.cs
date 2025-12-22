@@ -318,10 +318,9 @@ namespace Trove.SpatialQueries
                 }
                 else
                 {
-                    nodesStack.PushLast(nodesStackPtr, node.DataIndex);
-                    for (int i = 1; i < BVHUtils.NbLeavesPerNode; i++)
+                    for (int i = 0; i < BVHUtils.NbLeavesPerNode; i++)
                     {
-                        nodesStack.PushFirst(nodesStackPtr, node.DataIndex + i);
+                        nodesStack.PushLast(nodesStackPtr, node.DataIndex + i);
                     }
                 }
             }
@@ -361,10 +360,9 @@ namespace Trove.SpatialQueries
                 }
                 else
                 {
-                    nodesStack.PushLast(nodesStackPtr, node.DataIndex);
-                    for (int i = 1; i < BVHUtils.NbLeavesPerNode; i++)
+                    for (int i = 0; i < BVHUtils.NbLeavesPerNode; i++)
                     {
-                        nodesStack.PushFirst(nodesStackPtr, node.DataIndex + i);
+                        nodesStack.PushLast(nodesStackPtr, node.DataIndex + i);
                     }
                 }
             }
@@ -403,10 +401,9 @@ namespace Trove.SpatialQueries
                 }
                 else
                 {
-                    nodesStack.PushLast(nodesStackPtr, node.DataIndex);
-                    for (int i = 1; i < BVHUtils.NbLeavesPerNode; i++)
+                    for (int i = 0; i < BVHUtils.NbLeavesPerNode; i++)
                     {
-                        nodesStack.PushFirst(nodesStackPtr, node.DataIndex + i);
+                        nodesStack.PushLast(nodesStackPtr, node.DataIndex + i);
                     }
                 }
             }
@@ -566,10 +563,9 @@ namespace Trove.SpatialQueries
                 }
                 else
                 {
-                    nodesStack.PushLast(nodesStackPtr, node.DataIndex);
-                    for (int i = 1; i < BVHUtils.NbLeavesPerNode; i++)
+                    for (int i = 0; i < BVHUtils.NbLeavesPerNode; i++)
                     {
-                        nodesStack.PushFirst(nodesStackPtr, node.DataIndex + i);
+                        nodesStack.PushLast(nodesStackPtr, node.DataIndex + i);
                     }
                 }
             }
