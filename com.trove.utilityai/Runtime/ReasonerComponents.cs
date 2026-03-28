@@ -55,7 +55,7 @@ namespace Trove.UtilityAI
         public byte __internal__flags;
         public int __internal__actionIndex;
         public int __internal__id;
-        public BlobAssetReference<ConsiderationDefinition> Definition;
+        [NonSerialized] public BlobAssetReference<ConsiderationDefinition> Definition;
 
         public int ID => __internal__id;
         public bool IsCreated { get { return BitUtilities.GetBit(__internal__flags, ReasonerUtilities.IsCreatedBitPosition); } set { BitUtilities.SetBit(value, ref __internal__flags, ReasonerUtilities.IsCreatedBitPosition); } }
