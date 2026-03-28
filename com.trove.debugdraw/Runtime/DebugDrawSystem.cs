@@ -420,7 +420,11 @@ namespace Trove.DebugDraw
                 {
                     int alignment = UnsafeUtility.AlignOf<long>();
 
+#if UNITY_6000_4_OR_NEWER
+                    drawCommands->drawCommandPickingEntityIds = null;
+#else
                     drawCommands->drawCommandPickingInstanceIDs = null;
+#endif
                     drawCommands->drawCommandCount = 0;
                     drawCommands->proceduralDrawCommandCount = 2;
                     drawCommands->drawRangeCount = 1;
