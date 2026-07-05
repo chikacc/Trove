@@ -10,7 +10,8 @@
         "Unity.Collections",
         "Unity.Burst",
         "Unity.Physics",
-        "com.trove.eventsystems"
+        "com.trove.eventsystems",
+        "Unity.Addressables"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

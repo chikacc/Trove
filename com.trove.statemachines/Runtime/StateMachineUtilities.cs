@@ -131,6 +131,7 @@ namespace Trove.Statemachines
                 }
                 newState.OnStateEnter(ref stateMachine, ref globalStateUpdateData, ref entityStateUpdateData);
                 stateMachine.CurrentStateHandle = newStateHandle;
+                return true;
             }
 
             return false;
