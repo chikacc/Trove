@@ -139,66 +139,66 @@ namespace Trove
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static int GetFixedList32Capacity<T>() where T : unmanaged
         {
-            return FixedList.Capacity<FixedBytes32Align8, T>();
+            return new FixedList32Bytes<T>().Capacity;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static int GetFixedList64Capacity<T>() where T : unmanaged
         {
-            return FixedList.Capacity<FixedBytes64Align8, T>();
+            return new FixedList64Bytes<T>().Capacity;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static int GetFixedList128Capacity<T>() where T : unmanaged
         {
-            return FixedList.Capacity<FixedBytes128Align8, T>();
+            return new FixedList128Bytes<T>().Capacity;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static int GetFixedList512Capacity<T>() where T : unmanaged
         {
-            return FixedList.Capacity<FixedBytes512Align8, T>();
+            return new FixedList512Bytes<T>().Capacity;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static int GetFixedList4096Capacity<T>() where T : unmanaged
         {
-            return FixedList.Capacity<FixedBytes4096Align8, T>();
+            return new FixedList4096Bytes<T>().Capacity;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static unsafe ref T GetFixedListElementAsRef<T>(ref FixedList32Bytes<T> fixedList, int index)
             where T : unmanaged
         {
-            return ref UnsafeUtility.ArrayElementAsRef<T>(fixedList.Buffer, index);
+            return ref UnsafeUtility.ArrayElementAsRef<T>(fixedList.GetUnsafePtr(), index);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static unsafe ref T GetFixedListElementAsRef<T>(ref FixedList64Bytes<T> fixedList, int index)
             where T : unmanaged
         {
-            return ref UnsafeUtility.ArrayElementAsRef<T>(fixedList.Buffer, index);
+            return ref UnsafeUtility.ArrayElementAsRef<T>(fixedList.GetUnsafePtr(), index);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static unsafe ref T GetFixedListElementAsRef<T>(ref FixedList128Bytes<T> fixedList, int index)
             where T : unmanaged
         {
-            return ref UnsafeUtility.ArrayElementAsRef<T>(fixedList.Buffer, index);
+            return ref UnsafeUtility.ArrayElementAsRef<T>(fixedList.GetUnsafePtr(), index);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static unsafe ref T GetFixedListElementAsRef<T>(ref FixedList512Bytes<T> fixedList, int index)
             where T : unmanaged
         {
-            return ref UnsafeUtility.ArrayElementAsRef<T>(fixedList.Buffer, index);
+            return ref UnsafeUtility.ArrayElementAsRef<T>(fixedList.GetUnsafePtr(), index);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static unsafe ref T GetFixedListElementAsRef<T>(ref FixedList4096Bytes<T> fixedList, int index)
             where T : unmanaged
         {
-            return ref UnsafeUtility.ArrayElementAsRef<T>(fixedList.Buffer, index);
+            return ref UnsafeUtility.ArrayElementAsRef<T>(fixedList.GetUnsafePtr(), index);
         }
 
         public static unsafe void InsertRange<T>(this DynamicBuffer<T> buffer, int insertIndex, int insertLength)
